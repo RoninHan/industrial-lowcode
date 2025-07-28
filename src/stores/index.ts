@@ -1,10 +1,13 @@
-import { makeAutoObservable } from 'mobx';
+import { makeAutoObservable, observable, action } from 'mobx';
+import { theme } from 'antd';
+
+type Theme = 'light' | 'dark';
 
 class AppStore {
   // 应用状态
-  isLoading = false;
+  loading = false;
   currentUser: any = null;
-  theme = 'light';
+  theme: Theme = 'light';
   
   // 低代码编辑器状态
   components: any[] = [];
@@ -27,12 +30,17 @@ class AppStore {
   };
 
   constructor() {
-    makeAutoObservable(this);
+    makeAutoObservable(this, {
+      loading: observable,
+      theme: observable,
+      setLoading: action,
+      toggleTheme: action,
+    });
   }
 
   // 应用状态方法
   setLoading(loading: boolean) {
-    this.isLoading = loading;
+    this.loading = loading;
   }
 
   setCurrentUser(user: any) {
@@ -42,6 +50,10 @@ class AppStore {
   setTheme(theme: string) {
     this.theme = theme;
   }
+
+  toggleTheme = () => {
+    this.theme = this.theme === 'light' ? 'dark' : 'light';
+  };
 
   // 低代码编辑器方法
   addComponent(component: any) {
@@ -71,4 +83,4 @@ class AppStore {
   }
 }
 
-export const appStore = new AppStore(); 
+export const appStore = new AppStore();

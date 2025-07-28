@@ -1,91 +1,91 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
+import { Layout as AntLayout, Menu, Switch, Space } from 'antd';
 import { observer } from 'mobx-react';
 import { appStore } from '../stores';
+import {
+  DesktopOutlined,
+  PieChartOutlined,
+  FileOutlined,
+  TeamOutlined,
+  BulbOutlined,
+} from '@ant-design/icons';
 
-const Layout: React.FC = () => {
+const { Header, Content, Footer, Sider } = AntLayout;
+
+const menuItems = [
+  {
+    key: '/',
+    icon: <DesktopOutlined />,
+    label: <Link to="/">仪表板</Link>,
+  },
+  {
+    key: '/three',
+    icon: <PieChartOutlined />,
+    label: <Link to="/three">3D场景</Link>,
+  },
+  {
+    key: '/charts',
+    icon: <FileOutlined />,
+    label: <Link to="/charts">图表</Link>,
+  },
+  {
+    key: '/editor',
+    icon: <TeamOutlined />,
+    label: <Link to="/editor">编辑器</Link>,
+  },
+];
+
+const Layout: React.FC = observer(() => {
   const location = useLocation();
 
-  const navItems = [
-    { path: '/', label: '仪表板', icon: '📊' },
-    { path: '/three', label: '3D场景', icon: '🎮' },
-    { path: '/charts', label: '图表', icon: '📈' },
-    { path: '/editor', label: '低代码编辑器', icon: '⚙️' },
-  ];
-
   return (
-    <div className="min-h-screen bg-industrial-50">
-      {/* 顶部导航栏 */}
-      <nav className="bg-white shadow-sm border-b border-industrial-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <h1 className="text-xl font-bold text-primary-600">
-                  工业低代码平台
-                </h1>
-              </div>
-            </div>
-            
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={() => appStore.setTheme(appStore.theme === 'light' ? 'dark' : 'light')}
-                className="p-2 rounded-lg bg-industrial-100 hover:bg-industrial-200 transition-colors"
-              >
-                {appStore.theme === 'light' ? '🌙' : '☀️'}
-              </button>
-              
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-primary-500 rounded-full flex items-center justify-center text-white text-sm font-medium">
-                  {appStore.currentUser?.username?.charAt(0) || 'U'}
-                </div>
-                <span className="text-sm text-industrial-700">
-                  {appStore.currentUser?.username || '用户'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      <div className="flex">
-        {/* 侧边栏 */}
-        <aside className="w-64 bg-white shadow-sm border-r border-industrial-200">
-          <nav className="mt-8">
-            <div className="px-4 space-y-2">
-              {navItems.map((item) => (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
-                    location.pathname === item.path
-                      ? 'bg-primary-50 text-primary-700 border-r-2 border-primary-500'
-                      : 'text-industrial-600 hover:bg-industrial-50 hover:text-industrial-900'
-                  }`}
-                >
-                  <span className="mr-3 text-lg">{item.icon}</span>
-                  {item.label}
-                </Link>
-              ))}
-            </div>
-          </nav>
-        </aside>
-
-        {/* 主内容区域 */}
-        <main className="flex-1 p-8">
-          {appStore.isLoading && (
-            <div className="flex items-center justify-center h-64">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-500"></div>
-            </div>
-          )}
-          
-          <div className={appStore.isLoading ? 'hidden' : ''}>
+    <AntLayout style={{ minHeight: '100vh' }}>
+      <Sider collapsible>
+        <div className="h-8 m-4 bg-gray-700" />
+        <Menu
+          theme="dark"
+          defaultSelectedKeys={[location.pathname]}
+          mode="inline"
+          items={menuItems}
+        />
+      </Sider>
+      <AntLayout>
+        <Header
+          style={{
+            padding: '0 16px',
+            background: '#fff',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+          }}
+        >
+          <Space>
+            <BulbOutlined />
+            <Switch
+              checked={appStore.theme === 'dark'}
+              onChange={appStore.toggleTheme}
+            />
+          </Space>
+        </Header>
+        <Content style={{ margin: '16px' }}>
+          <div
+            style={{
+              padding: 24,
+              minHeight: 360,
+              background: '#fff',
+              borderRadius: '8px',
+            }}
+          >
             <Outlet />
           </div>
-        </main>
-      </div>
-    </div>
+        </Content>
+        <Footer style={{ textAlign: 'center' }}>
+          Industrial Lowcode ©{new Date().getFullYear()} Created by RoninHan
+        </Footer>
+      </AntLayout>
+    </AntLayout>
   );
-};
+});
 
-export default observer(Layout); 
+export default Layout;

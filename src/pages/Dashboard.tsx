@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { observer } from 'mobx-react';
 import { appStore } from '../stores';
 import http from '../services/http';
@@ -12,6 +13,7 @@ interface StatsData {
 
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<StatsData | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -98,13 +100,13 @@ const Dashboard: React.FC = () => {
         <div className="card">
           <h3 className="text-lg font-semibold text-industrial-900 mb-4">快速操作</h3>
           <div className="space-y-3">
-            <button className="w-full btn-primary">
+            <button className="w-full btn-primary" onClick={() => navigate('/three')}>
               🎮 创建3D场景
             </button>
-            <button className="w-full btn-secondary">
+            <button className="w-full btn-secondary" onClick={() => navigate('/charts')}>
               📊 新建图表
             </button>
-            <button className="w-full btn-secondary">
+            <button className="w-full btn-secondary" onClick={() => navigate('/editor')}>
               ⚙️ 打开编辑器
             </button>
           </div>
@@ -147,4 +149,4 @@ const Dashboard: React.FC = () => {
   );
 };
 
-export default observer(Dashboard); 
+export default observer(Dashboard);
