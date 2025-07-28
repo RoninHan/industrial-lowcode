@@ -4,28 +4,33 @@ import Dashboard from '../pages/Dashboard';
 import ThreeScene from '../pages/ThreeScene';
 import Charts from '../pages/Charts';
 import LowCodeEditor from '../pages/LowCodeEditor';
+import Login from '../pages/Login';
 
 export const router = createBrowserRouter([
-  {
-    path: '/',
-    element: <Layout />,
-    children: [
-      {
-        index: true,
-        element: <Dashboard />,
-      },
-      {
-        path: 'three',
-        element: <ThreeScene />,
-      },
-      {
-        path: 'charts',
-        element: <Charts />,
-      },
-      {
-        path: 'editor',
-        element: <LowCodeEditor />,
-      },
-    ],
-  },
-]); 
+	{
+		path: '/',
+		element: <Layout />,
+		children: [
+			{
+				index: true,
+				element: <Dashboard />,
+			},
+			{
+				path: 'three',
+				element: <ThreeScene />,
+			},
+			{
+				path: 'charts',
+				element: <Charts />,
+			},
+			{
+				path: 'editor',
+				element: <LowCodeEditor />,
+			},
+		],
+	},
+	{
+		path: '/login',
+		element: <Login />,
+	},
+]);
