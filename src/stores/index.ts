@@ -47,7 +47,7 @@ class AppStore {
     this.currentUser = user;
   }
 
-  setTheme(theme: string) {
+  setTheme(theme: Theme) {
     this.theme = theme;
   }
 
