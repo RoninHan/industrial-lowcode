@@ -14,6 +14,7 @@
     "@types/echarts": "^4.9.22",
     "@types/mockjs": "^1.0.10",
     "@types/three": "^0.178.1",
+    "ammo.js": "^0.0.10",
     "antd": "^5.26.6",
     "autoprefixer": "^10.4.21",
     "axios": "^1.11.0",

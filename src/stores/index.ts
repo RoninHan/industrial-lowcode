@@ -73,9 +73,18 @@ class AppStore {
     this.threeScene = scene;
   }
 
-  addThreeObject(object: any) {
+  addThreeObject = action((object: any) => {
     this.threeObjects.push(object);
-  }
+  });
+
+  clearThreeObjects = action((scene: any) => {
+    this.threeObjects.forEach(obj => {
+      if (scene && typeof scene.remove === 'function') {
+        scene.remove(obj);
+      }
+    });
+    this.threeObjects = [];
+  });
 
   // 图表数据方法
   updateChartData(type: string, data: any[]) {
