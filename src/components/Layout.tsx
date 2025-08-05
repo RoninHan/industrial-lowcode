@@ -33,9 +33,9 @@ const menuItems = [
     label: <Link to="/">仪表板</Link>,
   },
   {
-    key: '/three',
+    key: '/three-editor',
     icon: <PieChartOutlined />,
-    label: <Link to="/three">3D场景</Link>,
+    label: <Link to="/three-editor">3D场景</Link>,
   },
   {
     key: '/charts',
@@ -136,13 +136,16 @@ const Layout: React.FC = observer(() => {
             </Dropdown>
           </Space>
         </Header>
-        <Content style={{ margin: '24px 16px 0' }}>
+        <Content style={{ margin: '24px 16px 0', display: 'flex', flexDirection: 'column' }}>
           <div
             style={{
               padding: 24,
+              flex: 1,
               minHeight: 'calc(100vh - 168px)',
               background: colorBgContainer,
               borderRadius: 8,
+              display: 'flex',
+              flexDirection: 'column',
             }}
           >
             <Outlet />
