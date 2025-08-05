@@ -1,122 +1,118 @@
-
-
-import React, { useEffect, useRef } from 'react';
+import React, { useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { TransformControls } from 'three/examples/jsm/controls/TransformControls';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 
-const ThreeEditor: React.FC = () => {
-  const mountRef = useRef<HTMLDivElement>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-
-    // 场景
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, mount.clientWidth / mount.clientHeight, 0.1, 1000);
-    camera.position.set(2, 2, 5);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(mount.clientWidth, mount.clientHeight);
-    mount.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
-
-    // 添加一个立方体作为示例物体
-    const geometry = new THREE.BoxGeometry();
-    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-    const cube = new THREE.Mesh(geometry, material);
-    scene.add(cube);
-
-    // 添加地面网格
-    const gridHelper = new THREE.GridHelper(10, 20, 0x444444, 0x888888); // size, divisions, color1, color2
-    scene.add(gridHelper);
-
-    // 轨道控制器
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true; // 启用阻尼效果（惯性效果）
-    controls.dampingFactor = 0.05; // 阻尼系数
-    controls.target.copy(cube.position); // 设置控制器目标为 cube 的位置
-    controls.minDistance = 1; // 最小距离，防止摄像机钻进 cube
-    controls.maxDistance = 20; // 最大距离
-
-    // TransformControls 支持拖拽 cube
-    const transformControls = new TransformControls(camera, renderer.domElement);
-    transformControls.size = 0.75; // 控制器大小
-    transformControls.space = 'world'; // 使用世界坐标系
-    transformControls.attach(cube); // 绑定 cube
-    scene.add(transformControls as any);
-
-    transformControls.addEventListener('mouseDown', () => {
-      controls.enabled = false; // 拖拽时禁用 OrbitControls
-    });
-
-    transformControls.addEventListener('mouseUp', () => {
-      controls.enabled = true; // 拖拽结束后启用 OrbitControls
-    });
-
-    // 拖拽结束时限制 cube 位置在 [-5, 5] 区间，并防止 NaN
-    transformControls.addEventListener('dragging-changed', (event) => {
-      if (!event.value) {
-        const clamp = (v: number) => {
-          if (!isFinite(v) || isNaN(v)) return 0;
-          return Math.max(-5, Math.min(5, v));
-        };
-        cube.position.x = clamp(cube.position.x);
-        cube.position.y = clamp(cube.position.y);
-        // 限制 z 不能大于摄像机前方（防止 cube 跑到相机后面）
-        const maxZ = camera.position.z - 0.5;
-        cube.position.z = Math.min(clamp(cube.position.z), maxZ);
-      }
-    });
+type TransformBoxProps = {
+  width?: number;
+  height?: number;
+  onPosChanged?: (pos: THREE.Vector3) => void;
+};
 
 
-    // 点击 cube attach，点击空白 detach
-    renderer.domElement.addEventListener('pointerup', (e) => {
-      if (transformControls.dragging) return;
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      const pointer = new THREE.Vector2(x, y);
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(pointer, camera);
-      const intersects = raycaster.intersectObject(cube, false);
-      if (intersects.length > 0) {
-        transformControls.attach(cube);
-      } else {
-        transformControls.detach();
-      }
-    });
+const ThreeEditor: React.FC<TransformBoxProps> = ({
+  width = 800,
+  height = 600,
+  onPosChanged,
+}) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const controlsRef = useRef<TransformControls | null>(null);
+  const orbitRef = useRef<OrbitControls | null>(null);
+  const meshRef = useRef<THREE.Mesh | null>(null);
+  const frameIdRef = useRef<number | null>(null);
 
-    let lastTime = performance.now();
-    function animate(now?: number) {
-      requestAnimationFrame(animate);
-      const t = typeof now === 'number' ? now : performance.now();
-      const delta = (t - lastTime) / 1000;
-      lastTime = t;
-      // 让 OrbitControls 始终以 cube 为中心
-      controls.target.copy(cube.position);
-      controls.update();
-      transformControls.update(delta);
+  const animate = useCallback((scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer) => {
+    frameIdRef.current = requestAnimationFrame(() => {
+      orbitRef.current?.update();
       renderer.render(scene, camera);
-    }
-    animate();
-
-    return () => {
-      geometry.dispose();
-      material.dispose();
-      renderer.dispose();
-      controls.dispose();
-      transformControls.dispose();
-      if (renderer.domElement.parentNode) {
-        renderer.domElement.parentNode.removeChild(renderer.domElement);
-      }
-    };
+      animate(scene, camera, renderer);
+    });
   }, []);
 
+  useEffect(() => {
+    console.log('THREE_REVISION:', THREE.REVISION);
+    const container = containerRef.current;
+    if (!container) return;
+
+    // 1. Scene, Camera, Renderer
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf0f0f0);
+
+    const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
+    camera.position.set(3, 3, 3);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(width, height);
+    container.appendChild(renderer.domElement);
+
+    // 2. Helpers & Lights
+    scene.add(new THREE.AxesHelper(5));
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+    scene.add(hemi);
+
+    // 3. Box mesh
+    const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+    const boxMat = new THREE.MeshStandardMaterial({ color: 0x156289 });
+    const mesh = new THREE.Mesh(boxGeo, boxMat);
+    meshRef.current = mesh;
+    scene.add(mesh);
+
+    // 4. OrbitControls
+    const orbit = new OrbitControls(camera, renderer.domElement);
+    orbitRef.current = orbit;
+
+    // 5. TransformControls
+    const tctrl = new TransformControls(camera, renderer.domElement);
+    tctrl.attach(mesh);
+    tctrl.setMode('translate');
+    tctrl.setTranslationSnap(0.5); // 步进设置
+    tctrl.showX = true;
+    tctrl.showY = true;
+    tctrl.showZ = true;
+
+    // 切换 OrbitControls enabled 状态
+    tctrl.addEventListener('dragging-changed', (evt) => {
+      orbit.enabled = !evt.value;
+    });
+
+    // 监听物体变化
+    tctrl.addEventListener('objectChange', () => {
+      if (onPosChanged) onPosChanged(mesh.position.clone());
+    });
+
+    scene.add(tctrl.getHelper());
+    controlsRef.current = tctrl;
+
+    // 6. Start animation
+    animate(scene, camera, renderer);
+
+    // 7. Handle window resize
+    const onWindowResize = () => {
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+    };
+    window.addEventListener('resize', onWindowResize);
+
+    // 8. Cleanup
+    return () => {
+      window.removeEventListener('resize', onWindowResize);
+      renderer.domElement && container.removeChild(renderer.domElement);
+      if (frameIdRef.current != null) cancelAnimationFrame(frameIdRef.current);
+      tctrl.detach();
+      scene.remove(tctrl.getHelper());
+      tctrl.dispose();
+      orbit.dispose();
+      renderer.dispose();
+    };
+  }, [width, height, onPosChanged, animate]);
+
   return (
-    <div ref={mountRef} style={{ height: '100vh', width: '100vw', overflow: 'hidden' }} />
+    <div
+      ref={containerRef}
+      style={{ width, height, touchAction: 'none' }}
+    />
   );
 };
 
