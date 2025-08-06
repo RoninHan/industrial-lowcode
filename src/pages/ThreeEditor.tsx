@@ -94,6 +94,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   const [animationDistance, setAnimationDistance] = useState<string>('1.0'); 
   const [animationScale, setAnimationScale] = useState<string>('1.2');
   
+  // 全场景动画状态
+  const [isPlayingSceneAnimation, setIsPlayingSceneAnimation] = useState<boolean>(false);
+  const sceneAnimationFrameRefs = useRef<Map<string, number>>(new Map()); // 存储每个物体的动画帧ID
+  const sceneAnimationInitialStates = useRef<Map<string, {position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3}>>(new Map()); // 存储每个物体的初始状态
+  
+  // 下拉菜单状态
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null); // 当前打开的下拉菜单
+  
   // 当选中步骤改变时，更新参数输入框的值
   useEffect(() => {
     if (selectedAnimationStep) {
@@ -368,6 +376,196 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
   }, [selectedObject, stopAnimation]);
   
+  // 播放全场景动画
+  const playSceneAnimation = useCallback(() => {
+    if (isPlayingSceneAnimation) return;
+    
+    // 获取所有有动画的物体
+    const objectsWithAnimations = objectsInfoRef.current.filter(info => 
+      info.mesh && info.animations && info.animations.length > 0
+    );
+    
+    if (objectsWithAnimations.length === 0) {
+      alert('场景中没有物体设置了动画');
+      return;
+    }
+    
+    setIsPlayingSceneAnimation(true);
+    
+    // 清理之前的动画帧
+    sceneAnimationFrameRefs.current.forEach((frameId) => {
+      cancelAnimationFrame(frameId);
+    });
+    sceneAnimationFrameRefs.current.clear();
+    sceneAnimationInitialStates.current.clear();
+    
+    // 为每个物体播放其第一个动画序列
+    objectsWithAnimations.forEach((objectInfo) => {
+      if (!objectInfo.mesh || !objectInfo.animations || objectInfo.animations.length === 0) return;
+      
+      const mesh = objectInfo.mesh;
+      const sequence = objectInfo.animations[0]; // 播放第一个动画序列
+      
+      // 保存初始状态
+      sceneAnimationInitialStates.current.set(objectInfo.id, {
+        position: mesh.position.clone(),
+        rotation: mesh.rotation.clone(),
+        scale: mesh.scale.clone()
+      });
+      
+      sequence.isPlaying = true;
+      sequence.currentStepIndex = 0;
+      
+      const playObjectSequence = (stepIndex: number) => {
+        if (stepIndex >= sequence.steps.length) {
+          // 动画序列完成
+          sequence.isPlaying = false;
+          sceneAnimationFrameRefs.current.delete(objectInfo.id);
+          console.log(`物体 ${objectInfo.name} 动画播放完成`);
+          
+          // 检查是否所有物体动画都完成了
+          if (sceneAnimationFrameRefs.current.size === 0) {
+            setIsPlayingSceneAnimation(false);
+            console.log('全场景动画播放完成');
+          }
+          return;
+        }
+        
+        const step = sequence.steps[stepIndex];
+        const startTime = Date.now();
+        const startPosition = mesh.position.clone();
+        const startRotation = mesh.rotation.clone();
+        const startScale = mesh.scale.clone();
+        
+        const animate = () => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const progress = Math.min(elapsed / step.duration, 1);
+          
+          // 应用动画变换
+          switch (step.type) {
+            case 'moveUp':
+              mesh.position.y = startPosition.y + (step.distance || 1) * progress;
+              break;
+            case 'moveDown':
+              mesh.position.y = startPosition.y - (step.distance || 1) * progress;
+              break;
+            case 'moveLeft':
+              mesh.position.x = startPosition.x - (step.distance || 1) * progress;
+              break;
+            case 'moveRight':
+              mesh.position.x = startPosition.x + (step.distance || 1) * progress;
+              break;
+            case 'moveForward':
+              mesh.position.z = startPosition.z - (step.distance || 1) * progress;
+              break;
+            case 'moveBackward':
+              mesh.position.z = startPosition.z + (step.distance || 1) * progress;
+              break;
+            case 'rotateX':
+              mesh.rotation.x = startRotation.x + (step.distance || Math.PI / 2) * progress;
+              break;
+            case 'rotateY':
+              mesh.rotation.y = startRotation.y + (step.distance || Math.PI / 2) * progress;
+              break;
+            case 'rotateZ':
+              mesh.rotation.z = startRotation.z + (step.distance || Math.PI / 2) * progress;
+              break;
+            case 'scaleUp':
+              const upScale = step.scale || 1.2;
+              mesh.scale.setScalar(startScale.x + (upScale - startScale.x) * progress);
+              break;
+            case 'scaleDown':
+              const downScale = step.scale || 0.8;
+              mesh.scale.setScalar(startScale.x + (downScale - startScale.x) * progress);
+              break;
+          }
+          
+          if (progress < 1) {
+            const frameId = requestAnimationFrame(animate);
+            sceneAnimationFrameRefs.current.set(objectInfo.id, frameId);
+          } else {
+            // 当前步骤完成，播放下一步
+            sequence.currentStepIndex = stepIndex + 1;
+            playObjectSequence(stepIndex + 1);
+          }
+        };
+        
+        if (step.type !== 'pause') {
+          const frameId = requestAnimationFrame(animate);
+          sceneAnimationFrameRefs.current.set(objectInfo.id, frameId);
+        } else {
+          // 暂停步骤
+          setTimeout(() => playObjectSequence(stepIndex + 1), (step.duration || 1) * 1000);
+        }
+      };
+      
+      playObjectSequence(0);
+    });
+    
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+  }, [isPlayingSceneAnimation]);
+  
+  // 停止全场景动画
+  const stopSceneAnimation = useCallback(() => {
+    setIsPlayingSceneAnimation(false);
+    
+    // 停止所有动画帧
+    sceneAnimationFrameRefs.current.forEach((frameId) => {
+      cancelAnimationFrame(frameId);
+    });
+    sceneAnimationFrameRefs.current.clear();
+    
+    // 停止所有物体的动画序列
+    objectsInfoRef.current.forEach((objectInfo) => {
+      if (objectInfo.animations) {
+        objectInfo.animations.forEach((sequence) => {
+          sequence.isPlaying = false;
+        });
+      }
+    });
+    
+    setObjectsInfo([...objectsInfoRef.current]);
+    console.log('全场景动画已停止');
+  }, []);
+  
+  // 重置全场景动画
+  const resetSceneAnimation = useCallback(() => {
+    stopSceneAnimation();
+    
+    // 恢复所有物体到初始状态
+    sceneAnimationInitialStates.current.forEach((initialState, objectId) => {
+      const objectInfo = objectsInfoRef.current.find(info => info.id === objectId);
+      if (objectInfo && objectInfo.mesh) {
+        const mesh = objectInfo.mesh;
+        mesh.position.copy(initialState.position);
+        mesh.rotation.copy(initialState.rotation);
+        mesh.scale.copy(initialState.scale);
+        
+        // 更新物体信息
+        objectInfo.position = {
+          x: mesh.position.x,
+          y: mesh.position.y,
+          z: mesh.position.z
+        };
+        objectInfo.rotation = {
+          x: mesh.rotation.x,
+          y: mesh.rotation.y,
+          z: mesh.rotation.z
+        };
+        objectInfo.scale = {
+          x: mesh.scale.x,
+          y: mesh.scale.y,
+          z: mesh.scale.z
+        };
+      }
+    });
+    
+    sceneAnimationInitialStates.current.clear();
+    setObjectsInfo([...objectsInfoRef.current]);
+    console.log('全场景动画已重置到初始状态');
+  }, [stopSceneAnimation]);
+  
   // 数据查看功能状态
   const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
 
@@ -407,6 +605,143 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       return newState;
     });
   }, []);
+
+  // 下拉菜单处理函数
+  const toggleDropdown = useCallback((dropdownName: string) => {
+    setOpenDropdown(prev => prev === dropdownName ? null : dropdownName);
+  }, []);
+
+  const closeDropdown = useCallback(() => {
+    setOpenDropdown(null);
+  }, []);
+
+  // 点击外部关闭下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.dropdown-container')) {
+        closeDropdown();
+      }
+    };
+
+    if (openDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [openDropdown, closeDropdown]);
+
+  // 下拉菜单组件
+  const DropdownMenu: React.FC<{
+    title: string;
+    icon: string;
+    dropdownKey: string;
+    children: React.ReactNode;
+    buttonColor?: string;
+  }> = ({ title, icon, dropdownKey, children, buttonColor = '#666' }) => {
+    const isOpen = openDropdown === dropdownKey;
+    
+    return (
+      <div className="dropdown-container" style={{ position: 'relative', display: 'inline-block' }}>
+        <button
+          onClick={() => toggleDropdown(dropdownKey)}
+          style={{
+            padding: '6px 12px',
+            backgroundColor: isOpen ? '#e3f2fd' : 'transparent',
+            color: isOpen ? '#1976d2' : buttonColor,
+            border: '1px solid transparent',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '13px',
+            fontWeight: 'bold',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseOver={(e) => {
+            if (!isOpen) {
+              e.currentTarget.style.backgroundColor = '#f0f0f0';
+              e.currentTarget.style.borderColor = '#d0d0d0';
+            }
+          }}
+          onMouseOut={(e) => {
+            if (!isOpen) {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.borderColor = 'transparent';
+            }
+          }}
+        >
+          {icon} {title} {isOpen ? '▲' : '▼'}
+        </button>
+        
+        {isOpen && (
+          <div style={{
+            position: 'absolute',
+            top: '100%',
+            left: '0',
+            minWidth: '200px',
+            backgroundColor: '#fff',
+            border: '1px solid #d9d9d9',
+            borderRadius: '4px',
+            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+            zIndex: 1000,
+            padding: '8px 0',
+            marginTop: '2px'
+          }}>
+            {children}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // 菜单项组件
+  const DropdownItem: React.FC<{
+    onClick: () => void;
+    icon: string;
+    label: string;
+    description?: string;
+    disabled?: boolean;
+    color?: string;
+  }> = ({ onClick, icon, label, description, disabled = false, color = '#333' }) => (
+    <div
+      onClick={() => {
+        if (!disabled) {
+          onClick();
+          closeDropdown();
+        }
+      }}
+      style={{
+        padding: '8px 16px',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        opacity: disabled ? 0.5 : 1,
+        transition: 'background-color 0.2s ease'
+      }}
+      onMouseOver={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.backgroundColor = '#f5f5f5';
+        }
+      }}
+      onMouseOut={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.backgroundColor = 'transparent';
+        }
+      }}
+    >
+      <span style={{ fontSize: '14px' }}>{icon}</span>
+      <div>
+        <div style={{ fontSize: '13px', fontWeight: '500', color }}>{label}</div>
+        {description && (
+          <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>
+            {description}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   // 切换变换模式
   const setTransformModeHandler = useCallback((mode: 'translate' | 'rotate' | 'scale') => {
@@ -622,56 +957,17 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   // 切换全屏
   const toggleFullscreen = useCallback(() => {
-    const container = containerRef.current?.parentElement; // 获取整个ThreeEditor容器
-    if (!container) return;
+    // 使用CSS方式实现全屏，保持菜单栏可见
+    setIsFullscreen(prev => !prev);
+  }, []);
 
-    if (!isFullscreen) {
-      // 进入全屏
-      if (container.requestFullscreen) {
-        container.requestFullscreen();
-      } else if ((container as any).webkitRequestFullscreen) {
-        (container as any).webkitRequestFullscreen();
-      } else if ((container as any).msRequestFullscreen) {
-        (container as any).msRequestFullscreen();
-      }
-    } else {
-      // 退出全屏
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if ((document as any).webkitExitFullscreen) {
-        (document as any).webkitExitFullscreen();
-      } else if ((document as any).msExitFullscreen) {
-        (document as any).msExitFullscreen();
-      }
-    }
-  }, [isFullscreen]);
-
-  // 监听全屏状态变化
+  // 监听全屏状态变化，触发resize
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      const isCurrentlyFullscreen = !!(
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).msFullscreenElement
-      );
-      setIsFullscreen(isCurrentlyFullscreen);
-      
-      // 全屏状态改变时触发resize
-      setTimeout(() => {
-        handleResize();
-      }, 100);
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    document.addEventListener('msfullscreenchange', handleFullscreenChange);
-
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('msfullscreenchange', handleFullscreenChange);
-    };
-  }, [handleResize]);
+    // 全屏状态改变时触发resize
+    setTimeout(() => {
+      handleResize();
+    }, 100);
+  }, [isFullscreen, handleResize]);
 
   // 移除不必要的变换模式同步useEffect
 
@@ -1280,511 +1576,251 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   };
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', maxHeight: '100%', overflow: 'hidden' }}>
+    <div style={{ 
+      height: '100%', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      maxHeight: '100%', 
+      overflow: 'hidden',
+      // 全屏模式样式
+      ...(isFullscreen ? {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 9999,
+        backgroundColor: '#f8f9fa'
+      } : {})
+    }}>
+      {/* 添加动画关键帧 */}
+      <style>
+        {`
+          @keyframes pulse {
+            from { opacity: 1; }
+            to { opacity: 0.6; }
+          }
+          .dropdown-container:hover .dropdown-button {
+            background-color: #f0f0f0 !important;
+          }
+        `}
+      </style>
+      
       {/* 顶部菜单栏 */}
       <div style={{
-        backgroundColor: '#f5f5f5',
-        borderBottom: '1px solid #d9d9d9',
+        backgroundColor: '#f8f9fa',
+        borderBottom: '1px solid #dee2e6',
         padding: '8px 16px',
         display: 'flex',
         alignItems: 'center',
-        gap: '20px',
+        gap: '12px',
         minHeight: '48px',
         flexShrink: 0
       }}>
         {/* 文件菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>文件</span>
-          <button 
+        <DropdownMenu title="文件" icon="📁" dropdownKey="file" buttonColor="#333">
+          <DropdownItem 
             onClick={handleExportClick}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#1976d2',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#1565c0';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#1976d2';
-            }}
-            title="导出当前场景为GLTF格式"
-          >
-            📁 导出GLTF
-          </button>
-        </div>
+            icon="📁"
+            label="导出GLTF"
+            description="导出当前场景为GLTF格式"
+          />
+          <DropdownItem 
+            onClick={exportObjectsData}
+            icon="💾"
+            label="导出数据"
+            description="导出场景数据为JSON文件"
+          />
+          <DropdownItem 
+            onClick={importObjectsData}
+            icon="📂"
+            label="导入数据"
+            description="从JSON文件导入场景数据"
+          />
+        </DropdownMenu>
 
-        {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
-
-        {/* 物体菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>物体</span>
-          <button 
+        {/* 对象菜单 */}
+        <DropdownMenu title="对象" icon="📦" dropdownKey="objects" buttonColor="#333">
+          <DropdownItem 
             onClick={() => addObject('cube')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: '#9c27b0',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#7b1fa2';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#9c27b0';
-            }}
-            title="添加立方体"
-          >
-            🧊 立方体
-          </button>
-          <button 
+            icon="🧊"
+            label="立方体"
+            description="添加一个立方体到场景中"
+          />
+          <DropdownItem 
             onClick={() => addObject('sphere')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: '#00bcd4',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#0097a7';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#00bcd4';
-            }}
-            title="添加球体"
-          >
-            ⚽ 球体
-          </button>
-          <button 
+            icon="⚽"
+            label="球体"
+            description="添加一个球体到场景中"
+          />
+          <DropdownItem 
             onClick={() => addObject('cylinder')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: '#795548',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#5d4037';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#795548';
-            }}
-            title="添加圆柱体"
-          >
-            🛢️ 圆柱
-          </button>
-          <button 
+            icon="🛢️"
+            label="圆柱体"
+            description="添加一个圆柱体到场景中"
+          />
+          <DropdownItem 
             onClick={() => addObject('cone')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: '#ff5722',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#d84315';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#ff5722';
-            }}
-            title="添加圆锥体"
-          >
-            🔺 圆锥
-          </button>
-          <button 
+            icon="🔺"
+            label="圆锥体"
+            description="添加一个圆锥体到场景中"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
             onClick={clearObjects}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: '#f44336',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#d32f2f';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#f44336';
-            }}
-            title="清空所有添加的物体"
-          >
-            🗑️ 清空
-          </button>
-        </div>
-
-        {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
+            icon="🗑️"
+            label="清空场景"
+            description="删除场景中所有添加的物体"
+            color="#dc3545"
+          />
+        </DropdownMenu>
 
         {/* 变换菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>变换</span>
-          <button 
+        <DropdownMenu title="变换" icon="🔧" dropdownKey="transform" buttonColor="#333">
+          <DropdownItem 
             onClick={() => setTransformModeHandler('translate')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: transformMode === 'translate' ? '#4caf50' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              if (transformMode !== 'translate') {
-                e.currentTarget.style.backgroundColor = '#757575';
-              }
-            }}
-            onMouseOut={(e) => {
-              const currentBg = transformMode === 'translate' ? '#4caf50' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title="移动模式"
-          >
-            ↔️ 移动
-          </button>
-          <button 
+            icon={transformMode === 'translate' ? '✅' : '↔️'}
+            label="移动模式 (G)"
+            description="拖拽物体改变位置"
+            color={transformMode === 'translate' ? '#28a745' : '#333'}
+          />
+          <DropdownItem 
             onClick={() => setTransformModeHandler('rotate')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: transformMode === 'rotate' ? '#ff9800' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              if (transformMode !== 'rotate') {
-                e.currentTarget.style.backgroundColor = '#757575';
-              }
-            }}
-            onMouseOut={(e) => {
-              const currentBg = transformMode === 'rotate' ? '#ff9800' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title="旋转模式"
-          >
-            🔄 旋转
-          </button>
-          <button 
+            icon={transformMode === 'rotate' ? '✅' : '🔄'}
+            label="旋转模式 (R)"
+            description="旋转物体改变朝向"
+            color={transformMode === 'rotate' ? '#28a745' : '#333'}
+          />
+          <DropdownItem 
             onClick={() => setTransformModeHandler('scale')}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: transformMode === 'scale' ? '#2196f3' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '10px',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              if (transformMode !== 'scale') {
-                e.currentTarget.style.backgroundColor = '#757575';
-              }
-            }}
-            onMouseOut={(e) => {
-              const currentBg = transformMode === 'scale' ? '#2196f3' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title="缩放模式"
-          >
-            📏 缩放
-          </button>
-        </div>
-
-        {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
+            icon={transformMode === 'scale' ? '✅' : '📏'}
+            label="缩放模式 (S)"
+            description="缩放物体改变大小"
+            color={transformMode === 'scale' ? '#28a745' : '#333'}
+          />
+        </DropdownMenu>
 
         {/* 视图菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>视图</span>
-          <button 
+        <DropdownMenu title="视图" icon="👁️" dropdownKey="view" buttonColor="#333">
+          <DropdownItem 
             onClick={toggleGrid}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: showGrid ? '#ff9800' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverBg = showGrid ? '#f57c00' : '#757575';
-              e.currentTarget.style.backgroundColor = hoverBg;
-            }}
-            onMouseOut={(e) => {
-              const currentBg = showGrid ? '#ff9800' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title={showGrid ? '隐藏地面网格' : '显示地面网格'}
-          >
-            {showGrid ? '🔳 网格' : '⬜ 网格'}
-          </button>
-
-          {/* 全屏按钮 */}
-          <button
+            icon={showGrid ? '✅' : '🔳'}
+            label="网格显示"
+            description="切换地面网格的显示状态"
+            color={showGrid ? '#28a745' : '#333'}
+          />
+          <DropdownItem 
             onClick={toggleFullscreen}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: isFullscreen ? '#2196f3' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverBg = isFullscreen ? '#1976d2' : '#757575';
-              e.currentTarget.style.backgroundColor = hoverBg;
-            }}
-            onMouseOut={(e) => {
-              const currentBg = isFullscreen ? '#2196f3' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title={isFullscreen ? '退出全屏' : '进入全屏'}
-          >
-            {isFullscreen ? '🔙 退出' : '⛶ 全屏'}
-          </button>
-
-          {/* 属性面板按钮 */}
-          <button
+            icon={isFullscreen ? '🔙' : '⛶'}
+            label={isFullscreen ? '退出全屏' : '全屏模式'}
+            description={isFullscreen ? '退出全屏显示' : '进入全屏模式'}
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
             onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: showPropertiesPanel ? '#4caf50' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverBg = showPropertiesPanel ? '#388e3c' : '#757575';
-              e.currentTarget.style.backgroundColor = hoverBg;
-            }}
-            onMouseOut={(e) => {
-              const currentBg = showPropertiesPanel ? '#4caf50' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title={showPropertiesPanel ? '隐藏属性面板' : '显示属性面板'}
-          >
-            {showPropertiesPanel ? '🔧 隐藏属性' : '🔧 属性面板'}
-          </button>
-          
-          {/* 动画面板按钮 */}
-          <button
+            icon={showPropertiesPanel ? '✅' : '🔧'}
+            label="属性面板"
+            description="显示/隐藏物体属性面板"
+            color={showPropertiesPanel ? '#28a745' : '#333'}
+          />
+          <DropdownItem 
             onClick={() => setShowAnimationPanel(!showAnimationPanel)}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: showAnimationPanel ? '#ff9800' : '#9e9e9e',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverBg = showAnimationPanel ? '#f57c00' : '#757575';
-              e.currentTarget.style.backgroundColor = hoverBg;
-            }}
-            onMouseOut={(e) => {
-              const currentBg = showAnimationPanel ? '#ff9800' : '#9e9e9e';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title={showAnimationPanel ? '隐藏动画面板' : '显示动画面板'}
-          >
-            {showAnimationPanel ? '🎬 隐藏动画' : '🎬 动画面板'}
-          </button>
-        </div>
-
-        {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
-
-        {/* 调试菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>数据</span>
-          <button 
+            icon={showAnimationPanel ? '✅' : '🎬'}
+            label="动画面板"
+            description="显示/隐藏动画编辑面板"
+            color={showAnimationPanel ? '#28a745' : '#333'}
+          />
+          <DropdownItem 
             onClick={() => setShowDataPanel(!showDataPanel)}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: showDataPanel ? '#4caf50' : '#607d8b',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverColor = showDataPanel ? '#388e3c' : '#455a64';
-              e.currentTarget.style.backgroundColor = hoverColor;
-            }}
-            onMouseOut={(e) => {
-              const currentColor = showDataPanel ? '#4caf50' : '#607d8b';
-              e.currentTarget.style.backgroundColor = currentColor;
-            }}
-            title={showDataPanel ? '隐藏数据面板' : '显示数据面板'}
-          >
-            {showDataPanel ? '📊 隐藏面板' : '📊 数据面板'}
-          </button>
-          <button 
-            onClick={exportObjectsData}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#2196f3',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#1976d2';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#2196f3';
-            }}
-            title="导出场景数据为JSON文件"
-          >
-            💾 导出数据
-          </button>
-          <button 
-            onClick={importObjectsData}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#ff9800',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#f57c00';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#ff9800';
-            }}
-            title="从JSON文件导入场景数据"
-          >
-            📂 导入数据
-          </button>
-        </div>
+            icon={showDataPanel ? '✅' : '📊'}
+            label="数据面板"
+            description="显示/隐藏场景数据分析面板"
+            color={showDataPanel ? '#28a745' : '#333'}
+          />
+        </DropdownMenu>
+
+        {/* 动画菜单 */}
+        <DropdownMenu title="动画" icon="🎭" dropdownKey="animation" buttonColor="#333">
+          <DropdownItem 
+            onClick={playSceneAnimation}
+            icon="▶️"
+            label="播放全场景"
+            description="同时播放所有物体的动画"
+            disabled={isPlayingSceneAnimation}
+            color={isPlayingSceneAnimation ? '#6c757d' : '#28a745'}
+          />
+          <DropdownItem 
+            onClick={stopSceneAnimation}
+            icon="⏹️"
+            label="停止动画"
+            description="停止全场景动画播放"
+            disabled={!isPlayingSceneAnimation}
+            color={!isPlayingSceneAnimation ? '#6c757d' : '#dc3545'}
+          />
+          <DropdownItem 
+            onClick={resetSceneAnimation}
+            icon="🔄"
+            label="重置动画"
+            description="重置全场景动画到初始状态"
+            color="#17a2b8"
+          />
+        </DropdownMenu>
 
         {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
+        <div style={{ height: '24px', width: '1px', backgroundColor: '#dee2e6', margin: '0 8px' }}></div>
 
-        {/* 状态信息 */}
+        {/* 状态信息 - 简化版 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' }}>
           <div style={{
             fontSize: '12px',
-            color: '#666',
-            backgroundColor: showGrid ? '#fff3e0' : '#f5f5f5',
+            color: '#6c757d',
+            backgroundColor: '#e9ecef',
             padding: '4px 8px',
             borderRadius: '12px',
-            border: `1px solid ${showGrid ? '#ffcc02' : '#e0e0e0'}`
+            border: '1px solid #dee2e6'
           }}>
-            {showGrid ? '🔳 网格显示' : '⬜ 网格隐藏'}
+            📦 {objectsInfo.length} 个物体
           </div>
+          
           <div style={{
             fontSize: '12px',
-            color: '#666',
-            backgroundColor: isFullscreen ? '#e3f2fd' : '#f5f5f5',
+            color: '#6c757d',
+            backgroundColor: transformMode === 'translate' ? '#d4edda' : transformMode === 'rotate' ? '#fff3cd' : '#cce7ff',
             padding: '4px 8px',
             borderRadius: '12px',
-            border: `1px solid ${isFullscreen ? '#bbdefb' : '#e0e0e0'}`
+            border: `1px solid ${transformMode === 'translate' ? '#c3e6cb' : transformMode === 'rotate' ? '#f0e68c' : '#b3daff'}`
           }}>
-            {isFullscreen ? '⛶ 全屏模式' : '🪟 窗口模式'}
+            {transformMode === 'translate' ? '↔️ 移动' : transformMode === 'rotate' ? '🔄 旋转' : '📏 缩放'}
           </div>
-          <div style={{
-            fontSize: '12px',
-            color: '#666',
-            backgroundColor: '#f3e5f5',
-            padding: '4px 8px',
-            borderRadius: '12px',
-            border: '1px solid #ce93d8'
-          }}>
-            📊 物体数量: {objectsInfo.length}
-          </div>
-          <div style={{
-            fontSize: '12px',
-            color: '#666',
-            backgroundColor: '#fff8e1',
-            padding: '4px 8px',
-            borderRadius: '12px',
-            border: '1px solid #ffcc02'
-          }}>
-            🎯 选中: {selectedObject ? '动态物体' : '无'}
-          </div>
-          <div style={{
-            fontSize: '12px',
-            color: '#666',
-            backgroundColor: transformMode === 'translate' ? '#e8f5e8' : transformMode === 'rotate' ? '#fff3e0' : '#e3f2fd',
-            padding: '4px 8px',
-            borderRadius: '12px',
-            border: `1px solid ${transformMode === 'translate' ? '#c8e6c9' : transformMode === 'rotate' ? '#ffcc02' : '#bbdefb'}`
-          }}>
-            🛠️ 模式: {transformMode === 'translate' ? '移动' : transformMode === 'rotate' ? '旋转' : '缩放'}
-          </div>
+
+          {selectedObject && (
+            <div style={{
+              fontSize: '12px',
+              color: '#495057',
+              backgroundColor: '#fff3cd',
+              padding: '4px 8px',
+              borderRadius: '12px',
+              border: '1px solid #ffeaa7',
+              fontWeight: '500'
+            }}>
+              🎯 已选中
+            </div>
+          )}
+
+          {isPlayingSceneAnimation && (
+            <div style={{
+              fontSize: '12px',
+              color: '#155724',
+              backgroundColor: '#d4edda',
+              padding: '4px 8px',
+              borderRadius: '12px',
+              border: '1px solid #c3e6cb',
+              fontWeight: '500',
+              animation: 'pulse 1.5s ease-in-out infinite alternate'
+            }}>
+              🎭 动画播放中
+            </div>
+          )}
         </div>
       </div>
 
