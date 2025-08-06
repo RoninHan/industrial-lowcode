@@ -57,6 +57,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 新增：物体信息数组状态
   const [objectsInfo, setObjectsInfo] = useState<ObjectInfo[]>([]);
   const objectsInfoRef = useRef<ObjectInfo[]>([]);
+  
+  // 数据查看功能状态
+  const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
 
   // 获取当前活动的TransformControls
   const getCurrentControls = useCallback(() => {
@@ -266,6 +269,112 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
   }, []);
 
+  // 导出物体数据为JSON
+  const exportObjectsData = useCallback(() => {
+    const exportData = objectsInfo.map(info => ({
+      id: info.id,
+      type: info.type,
+      position: info.position,
+      rotation: info.rotation,
+      scale: info.scale,
+      color: info.color
+    }));
+    
+    const dataStr = JSON.stringify(exportData, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `scene-data-${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    URL.revokeObjectURL(url);
+    console.log('场景数据已导出为JSON文件');
+  }, [objectsInfo]);
+
+  // 复制数据到剪贴板
+  const copyDataToClipboard = useCallback(async () => {
+    const exportData = objectsInfo.map(info => ({
+      id: info.id,
+      type: info.type,
+      position: info.position,
+      rotation: info.rotation,
+      scale: info.scale,
+      color: info.color
+    }));
+    
+    const dataStr = JSON.stringify(exportData, null, 2);
+    
+    try {
+      await navigator.clipboard.writeText(dataStr);
+      console.log('场景数据已复制到剪贴板');
+      // 可以添加一个临时的提示消息
+    } catch (err) {
+      console.error('复制到剪贴板失败:', err);
+      // 降级方案：选择文本
+      const textarea = document.createElement('textarea');
+      textarea.value = dataStr;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      console.log('场景数据已复制到剪贴板（降级方案）');
+    }
+  }, [objectsInfo]);
+
+  // 计算场景统计信息
+  const getSceneStats = useCallback(() => {
+    const stats = {
+      totalObjects: objectsInfo.length,
+      objectTypes: {} as Record<string, number>,
+      bounds: {
+        minX: Infinity, maxX: -Infinity,
+        minY: Infinity, maxY: -Infinity,
+        minZ: Infinity, maxZ: -Infinity
+      },
+      totalVertices: 0,
+      totalFaces: 0
+    };
+
+    objectsInfo.forEach(info => {
+      // 统计物体类型
+      stats.objectTypes[info.type] = (stats.objectTypes[info.type] || 0) + 1;
+      
+      // 计算边界
+      stats.bounds.minX = Math.min(stats.bounds.minX, info.position.x);
+      stats.bounds.maxX = Math.max(stats.bounds.maxX, info.position.x);
+      stats.bounds.minY = Math.min(stats.bounds.minY, info.position.y);
+      stats.bounds.maxY = Math.max(stats.bounds.maxY, info.position.y);
+      stats.bounds.minZ = Math.min(stats.bounds.minZ, info.position.z);
+      stats.bounds.maxZ = Math.max(stats.bounds.maxZ, info.position.z);
+      
+      // 估算顶点和面数（基于物体类型的标准几何体）
+      if (info.mesh) {
+        const geometry = info.mesh.geometry;
+        if (geometry.attributes.position) {
+          stats.totalVertices += geometry.attributes.position.count;
+        }
+        if (geometry.index) {
+          stats.totalFaces += geometry.index.count / 3;
+        }
+      }
+    });
+
+    // 处理无物体的情况
+    if (objectsInfo.length === 0) {
+      stats.bounds = {
+        minX: 0, maxX: 0,
+        minY: 0, maxY: 0,
+        minZ: 0, maxZ: 0
+      };
+    }
+
+    return stats;
+  }, [objectsInfo]);
+
   // 切换全屏
   const toggleFullscreen = useCallback(() => {
     const container = containerRef.current?.parentElement; // 获取整个ThreeEditor容器
@@ -385,54 +494,62 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       return newObjectsInfo;
     });
 
-    // 自动选中新创建的物体
+    // 自动选中新创建的物体 - 使用requestAnimationFrame确保mesh已经添加到场景
     if (translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
-      // 直接内联选择逻辑，避免依赖selectObject
-      if (selectedObjectRef.current) {
-        const material = selectedObjectRef.current.material as THREE.MeshStandardMaterial;
-        material.emissive.setHex(0x000000);
-      }
-      
-      setSelectedObject(mesh);
-      selectedObjectRef.current = mesh;
-      
-      // 附加所有控制器到新物体
-      translateControlsRef.current.attach(mesh);
-      rotateControlsRef.current.attach(mesh);
-      scaleControlsRef.current.attach(mesh);
-      
-      // 设置当前活动的控制器
-      let currentControls = null;
-      switch (transformMode) {
-        case 'translate':
-          currentControls = translateControlsRef.current;
-          break;
-        case 'rotate':
-          currentControls = rotateControlsRef.current;
-          break;
-        case 'scale':
-          currentControls = scaleControlsRef.current;
-          break;
-      }
-      
-      if (currentControls) {
-        // 禁用所有控制器并隐藏helper
-        translateControlsRef.current.enabled = false;
-        translateControlsRef.current.getHelper().visible = false;
-        rotateControlsRef.current.enabled = false;
-        rotateControlsRef.current.getHelper().visible = false;
-        scaleControlsRef.current.enabled = false;
-        scaleControlsRef.current.getHelper().visible = false;
+      requestAnimationFrame(() => {
+        // 直接内联选择逻辑，避免依赖selectObject
+        if (selectedObjectRef.current) {
+          const material = selectedObjectRef.current.material as THREE.MeshStandardMaterial;
+          material.emissive.setHex(0x000000);
+        }
         
-        // 启用当前控制器并显示helper（考虑动画状态）
-        currentControls.enabled = !isAnimating;
-        currentControls.getHelper().visible = true;
-        controlsRef.current = currentControls;
-      }
-      
-      // 高亮新选中的物体
-      const material = mesh.material as THREE.MeshStandardMaterial;
-      material.emissive.setHex(0x444444);
+        setSelectedObject(mesh);
+        selectedObjectRef.current = mesh;
+        
+        // 附加所有控制器到新物体 - 确保mesh在场景中
+        if (translateControlsRef.current && mesh.parent) translateControlsRef.current.attach(mesh);
+        if (rotateControlsRef.current && mesh.parent) rotateControlsRef.current.attach(mesh);
+        if (scaleControlsRef.current && mesh.parent) scaleControlsRef.current.attach(mesh);
+        
+        // 设置当前活动的控制器
+        let currentControls = null;
+        switch (transformMode) {
+          case 'translate':
+            currentControls = translateControlsRef.current;
+            break;
+          case 'rotate':
+            currentControls = rotateControlsRef.current;
+            break;
+          case 'scale':
+            currentControls = scaleControlsRef.current;
+            break;
+        }
+        
+        if (currentControls) {
+          // 禁用所有控制器并隐藏helper
+          if (translateControlsRef.current) {
+            translateControlsRef.current.enabled = false;
+            translateControlsRef.current.getHelper().visible = false;
+          }
+          if (rotateControlsRef.current) {
+            rotateControlsRef.current.enabled = false;
+            rotateControlsRef.current.getHelper().visible = false;
+          }
+          if (scaleControlsRef.current) {
+            scaleControlsRef.current.enabled = false;
+            scaleControlsRef.current.getHelper().visible = false;
+          }
+          
+          // 启用当前控制器并显示helper（考虑动画状态）
+          currentControls.enabled = !isAnimating;
+          currentControls.getHelper().visible = true;
+          controlsRef.current = currentControls;
+        }
+        
+        // 高亮新选中的物体
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        material.emissive.setHex(0x444444);
+      });
     }
 
     console.log(`添加了${type}，当前物体数量:`, objectsInfoRef.current.length, '物体ID:', objectId);
@@ -544,6 +661,34 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     console.log('场景恢复完成');
   }, [clearObjects]);
 
+  // 从JSON文件导入物体数据
+  const importObjectsData = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const jsonData = JSON.parse(e.target?.result as string);
+            if (Array.isArray(jsonData)) {
+              restoreSceneFromData(jsonData);
+              console.log('成功从JSON文件导入场景数据');
+            } else {
+              console.error('无效的JSON格式');
+            }
+          } catch (error) {
+            console.error('解析JSON文件失败:', error);
+          }
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
+  }, [restoreSceneFromData]);
+
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
     if (!mesh) return;
@@ -560,10 +705,13 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       setSelectedObject(mesh);
       selectedObjectRef.current = mesh;
       
-      // 重新附加所有控制器到新物体
-      if (translateControlsRef.current) translateControlsRef.current.attach(mesh);
-      if (rotateControlsRef.current) rotateControlsRef.current.attach(mesh);
-      if (scaleControlsRef.current) scaleControlsRef.current.attach(mesh);
+      // 使用requestAnimationFrame确保mesh在场景中
+      requestAnimationFrame(() => {
+        // 重新附加所有控制器到新物体
+        if (translateControlsRef.current && mesh.parent) translateControlsRef.current.attach(mesh);
+        if (rotateControlsRef.current && mesh.parent) rotateControlsRef.current.attach(mesh);
+        if (scaleControlsRef.current && mesh.parent) scaleControlsRef.current.attach(mesh);
+      });
     }
     
     // 设置当前活动的控制器
@@ -1232,22 +1380,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
         {/* 调试菜单 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>调试</span>
+          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>数据</span>
           <button 
-            onClick={() => {
-              console.log('当前物体信息:', objectsInfo);
-              console.log('JSON格式:', JSON.stringify(objectsInfo.map(info => ({
-                id: info.id,
-                type: info.type,
-                position: info.position,
-                rotation: info.rotation,
-                scale: info.scale,
-                color: info.color
-              })), null, 2));
-            }}
+            onClick={() => setShowDataPanel(!showDataPanel)}
             style={{
               padding: '6px 12px',
-              backgroundColor: '#607d8b',
+              backgroundColor: showDataPanel ? '#4caf50' : '#607d8b',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
@@ -1259,14 +1397,91 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               gap: '4px'
             }}
             onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#455a64';
+              const hoverColor = showDataPanel ? '#388e3c' : '#455a64';
+              e.currentTarget.style.backgroundColor = hoverColor;
             }}
             onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#607d8b';
+              const currentColor = showDataPanel ? '#4caf50' : '#607d8b';
+              e.currentTarget.style.backgroundColor = currentColor;
             }}
-            title="在控制台查看物体信息JSON"
+            title={showDataPanel ? '隐藏数据面板' : '显示数据面板'}
           >
-            🐛 查看数据
+            {showDataPanel ? '📊 隐藏面板' : '📊 数据面板'}
+          </button>
+          <button 
+            onClick={exportObjectsData}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#2196f3',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = '#1976d2';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = '#2196f3';
+            }}
+            title="导出场景数据为JSON文件"
+          >
+            💾 导出数据
+          </button>
+          <button 
+            onClick={importObjectsData}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#ff9800',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = '#f57c00';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = '#ff9800';
+            }}
+            title="从JSON文件导入场景数据"
+          >
+            📂 导入数据
+          </button>
+          <button 
+            onClick={copyDataToClipboard}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#9c27b0',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = '#7b1fa2';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = '#9c27b0';
+            }}
+            title="复制场景数据到剪贴板"
+          >
+            � 复制数据
           </button>
           <button 
             onClick={() => {
@@ -1395,6 +1610,228 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           overflow: 'hidden'
         }}
       />
+
+      {/* 数据面板 */}
+      {showDataPanel && (
+        <div style={{
+          position: 'absolute',
+          top: '60px',
+          right: '20px',
+          width: '400px',
+          maxHeight: 'calc(100vh - 100px)',
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          backdropFilter: 'blur(10px)',
+          border: '1px solid #d9d9d9',
+          borderRadius: '8px',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+          overflow: 'hidden',
+          zIndex: 1000
+        }}>
+          {/* 面板标题 */}
+          <div style={{
+            padding: '12px 16px',
+            backgroundColor: '#f5f5f5',
+            borderBottom: '1px solid #d9d9d9',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#333' }}>
+              📊 场景数据分析
+            </h3>
+            <button
+              onClick={() => setShowDataPanel(false)}
+              style={{
+                background: 'none',
+                border: 'none',
+                fontSize: '18px',
+                cursor: 'pointer',
+                color: '#666',
+                padding: '4px'
+              }}
+              title="关闭面板"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* 面板内容 */}
+          <div style={{
+            maxHeight: 'calc(100vh - 200px)',
+            overflowY: 'auto',
+            padding: '16px'
+          }}>
+            {/* 统计信息 */}
+            <div style={{ marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
+                📈 场景统计
+              </h4>
+              {(() => {
+                const stats = getSceneStats();
+                return (
+                  <div style={{ fontSize: '12px', lineHeight: '1.6' }}>
+                    <div style={{ marginBottom: '8px' }}>
+                      <strong>物体总数:</strong> {stats.totalObjects}
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <strong>物体类型分布:</strong>
+                      <div style={{ marginLeft: '16px', marginTop: '4px' }}>
+                        {Object.entries(stats.objectTypes).map(([type, count]) => (
+                          <div key={type} style={{ marginBottom: '2px' }}>
+                            • {type}: {count}个
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <strong>场景边界:</strong>
+                      <div style={{ marginLeft: '16px', marginTop: '4px', fontFamily: 'monospace' }}>
+                        X: [{stats.bounds.minX.toFixed(2)}, {stats.bounds.maxX.toFixed(2)}]<br/>
+                        Y: [{stats.bounds.minY.toFixed(2)}, {stats.bounds.maxY.toFixed(2)}]<br/>
+                        Z: [{stats.bounds.minZ.toFixed(2)}, {stats.bounds.maxZ.toFixed(2)}]
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <strong>几何统计:</strong>
+                      <div style={{ marginLeft: '16px', marginTop: '4px' }}>
+                        顶点总数: ~{stats.totalVertices}<br/>
+                        面片总数: ~{Math.floor(stats.totalFaces)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 物体列表 */}
+            <div style={{ marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
+                📦 物体列表 ({objectsInfo.length})
+              </h4>
+              <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                {objectsInfo.length === 0 ? (
+                  <div style={{ 
+                    textAlign: 'center', 
+                    padding: '20px', 
+                    color: '#999', 
+                    fontSize: '12px' 
+                  }}>
+                    暂无物体数据
+                  </div>
+                ) : (
+                  objectsInfo.map((info, index) => (
+                    <div
+                      key={info.id}
+                      style={{
+                        padding: '8px',
+                        marginBottom: '8px',
+                        backgroundColor: selectedObject === info.mesh ? '#e3f2fd' : '#f9f9f9',
+                        border: selectedObject === info.mesh ? '2px solid #2196f3' : '1px solid #e0e0e0',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => info.mesh && selectObject(info.mesh)}
+                      title="点击选中此物体"
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <strong style={{ color: '#333' }}>
+                          #{index + 1} {info.type}
+                        </strong>
+                        <div style={{ 
+                          width: '16px', 
+                          height: '16px', 
+                          backgroundColor: `#${info.color.toString(16).padStart(6, '0')}`,
+                          border: '1px solid #ccc',
+                          borderRadius: '2px'
+                        }}></div>
+                      </div>
+                      <div style={{ color: '#666', fontFamily: 'monospace', lineHeight: '1.4' }}>
+                        <div>ID: {info.id.slice(0, 8)}...</div>
+                        <div>位置: ({info.position.x.toFixed(2)}, {info.position.y.toFixed(2)}, {info.position.z.toFixed(2)})</div>
+                        <div>旋转: ({(info.rotation.x * 180 / Math.PI).toFixed(1)}°, {(info.rotation.y * 180 / Math.PI).toFixed(1)}°, {(info.rotation.z * 180 / Math.PI).toFixed(1)}°)</div>
+                        <div>缩放: ({info.scale.x.toFixed(2)}, {info.scale.y.toFixed(2)}, {info.scale.z.toFixed(2)})</div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* 快捷操作 */}
+            <div>
+              <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
+                ⚡ 快捷操作
+              </h4>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                <button
+                  onClick={() => {
+                    console.log('当前物体信息:', objectsInfo);
+                    console.log('JSON格式:', JSON.stringify(objectsInfo.map(info => ({
+                      id: info.id,
+                      type: info.type,
+                      position: info.position,
+                      rotation: info.rotation,
+                      scale: info.scale,
+                      color: info.color
+                    })), null, 2));
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#607d8b',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontWeight: 'bold'
+                  }}
+                  title="在控制台查看详细数据"
+                >
+                  🐛 控制台日志
+                </button>
+                <button
+                  onClick={() => {
+                    // 测试恢复场景功能
+                    const testData = [
+                      {
+                        id: 'test-1',
+                        type: 'cube' as const,
+                        position: { x: 1, y: 1, z: 1 },
+                        rotation: { x: 0, y: Math.PI / 4, z: 0 },
+                        scale: { x: 1.5, y: 1.5, z: 1.5 },
+                        color: 0xff0000
+                      },
+                      {
+                        id: 'test-2',
+                        type: 'sphere' as const,
+                        position: { x: -2, y: 2, z: 0 },
+                        rotation: { x: 0, y: 0, z: 0 },
+                        scale: { x: 1, y: 1, z: 1 },
+                        color: 0x00ff00
+                      }
+                    ];
+                    restoreSceneFromData(testData);
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#8bc34a',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontWeight: 'bold'
+                  }}
+                  title="加载测试场景数据"
+                >
+                  🔄 测试场景
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
