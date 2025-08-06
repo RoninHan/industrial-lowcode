@@ -62,8 +62,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     frameIdRef.current = requestAnimationFrame(() => {
       orbitRef.current?.update();
       
-      // 动画逻辑
-      if (isAnimating && meshRef.current) {
+      // 动画逻辑 - 仅在有选中物体且开启动画时执行
+      if (isAnimating && selectedObjectRef.current) {
         animationTimeRef.current += 0.016; // 约60fps
         updateCubeAnimation();
       }
@@ -73,9 +73,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     });
   }, [isAnimating, transformMode]);
 
-  // 立方体动画更新函数
+  // 选中物体动画更新函数
   const updateCubeAnimation = useCallback(() => {
-    if (!meshRef.current) return;
+    if (!selectedObjectRef.current) return;
 
     const time = animationTimeRef.current;
     const cycleDuration = 8; // 一个完整循环8秒
@@ -109,11 +109,11 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       x = originalPos.x + moveDistance * (1 - t);
     }
 
-    meshRef.current.position.set(x, y, z);
+    selectedObjectRef.current.position.set(x, y, z);
     
     // 触发位置变化回调
     if (onPosChanged) {
-      onPosChanged(meshRef.current.position.clone());
+      onPosChanged(selectedObjectRef.current.position.clone());
     }
   }, [onPosChanged]);
 
@@ -122,6 +122,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     setIsAnimating(prev => {
       const newState = !prev;
       if (newState) {
+        // 开始动画时记录当前选中物体的位置
+        if (selectedObjectRef.current) {
+          originalPositionRef.current = selectedObjectRef.current.position.clone();
+        }
         animationTimeRef.current = 0;
         // 禁用所有变换控制器
         if (translateControlsRef.current) translateControlsRef.current.enabled = false;
@@ -130,7 +134,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       } else {
         // 重新启用当前模式的变换控制器
         const currentControls = getCurrentControls();
-        if (currentControls) {
+        if (currentControls && selectedObjectRef.current) {
           currentControls.enabled = true;
         }
       }
@@ -206,6 +210,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     cameraRef.current.aspect = width / height;
     cameraRef.current.updateProjectionMatrix();
     rendererRef.current.setSize(width, height);
+  }, []);
+
+  // 創建UUID
+  const createUUID = useCallback(() => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
   }, []);
 
   // 切换全屏
@@ -380,61 +392,30 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     setObjects([]);
     objectsRef.current = [];
     
-    // 如果选中的是被删除的物体，重新选中原始立方体
-    if (selectedObjectRef.current && selectedObjectRef.current !== meshRef.current) {
-      // 直接内联选择逻辑，避免依赖selectObject
-      if (meshRef.current && translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
-        // 清除之前的高亮
-        if (selectedObjectRef.current) {
-          const oldMaterial = selectedObjectRef.current.material as THREE.MeshStandardMaterial;
-          oldMaterial.emissive.setHex(0x000000);
-        }
-        
-        setSelectedObject(meshRef.current);
-        selectedObjectRef.current = meshRef.current;
-        
-        // 附加所有控制器到原始立方体
-        translateControlsRef.current.attach(meshRef.current);
-        rotateControlsRef.current.attach(meshRef.current);
-        scaleControlsRef.current.attach(meshRef.current);
-        
-        // 设置当前活动的控制器
-        let currentControls = null;
-        switch (transformMode) {
-          case 'translate':
-            currentControls = translateControlsRef.current;
-            break;
-          case 'rotate':
-            currentControls = rotateControlsRef.current;
-            break;
-          case 'scale':
-            currentControls = scaleControlsRef.current;
-            break;
-        }
-        
-        if (currentControls) {
-          // 禁用所有控制器并隐藏helper
-          translateControlsRef.current.enabled = false;
-          translateControlsRef.current.getHelper().visible = false;
-          rotateControlsRef.current.enabled = false;
-          rotateControlsRef.current.getHelper().visible = false;
-          scaleControlsRef.current.enabled = false;
-          scaleControlsRef.current.getHelper().visible = false;
-          
-          // 启用当前控制器并显示helper（考虑动画状态）
-          currentControls.enabled = !isAnimating;
-          currentControls.getHelper().visible = true;
-          controlsRef.current = currentControls;
-        }
-        
-        // 高亮新选中的物体
-        const material = meshRef.current.material as THREE.MeshStandardMaterial;
-        material.emissive.setHex(0x444444);
+    // 取消选择
+    if (selectedObjectRef.current) {
+      const material = selectedObjectRef.current.material as THREE.MeshStandardMaterial;
+      material.emissive.setHex(0x000000);
+      setSelectedObject(null);
+      selectedObjectRef.current = null;
+      
+      // 隐藏所有控制器
+      if (translateControlsRef.current) {
+        translateControlsRef.current.enabled = false;
+        translateControlsRef.current.getHelper().visible = false;
+      }
+      if (rotateControlsRef.current) {
+        rotateControlsRef.current.enabled = false;
+        rotateControlsRef.current.getHelper().visible = false;
+      }
+      if (scaleControlsRef.current) {
+        scaleControlsRef.current.enabled = false;
+        scaleControlsRef.current.getHelper().visible = false;
       }
     }
     
     console.log('已清空所有添加的物体');
-  }, [transformMode, isAnimating]);
+  }, []);
 
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
@@ -504,22 +485,41 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, cameraRef.current);
 
-    // 获取所有可点击的物体（原始立方体 + 动态添加的物体）
-    const clickableObjects = [
-      ...(meshRef.current ? [meshRef.current] : []),
-      ...objectsRef.current
-    ];
+    // 获取所有可点击的物体（仅动态添加的物体）
+    const clickableObjects = [...objectsRef.current];
 
     const intersects = raycaster.intersectObjects(clickableObjects);
 
     if (intersects.length > 0) {
       const clickedObject = intersects[0].object as THREE.Mesh;
       selectObject(clickedObject);
+    } else {
+      // 如果点击空白区域，取消选择
+      if (selectedObjectRef.current) {
+        const material = selectedObjectRef.current.material as THREE.MeshStandardMaterial;
+        material.emissive.setHex(0x000000);
+        setSelectedObject(null);
+        selectedObjectRef.current = null;
+        
+        // 隐藏所有控制器
+        if (translateControlsRef.current) {
+          translateControlsRef.current.enabled = false;
+          translateControlsRef.current.getHelper().visible = false;
+        }
+        if (rotateControlsRef.current) {
+          rotateControlsRef.current.enabled = false;
+          rotateControlsRef.current.getHelper().visible = false;
+        }
+        if (scaleControlsRef.current) {
+          scaleControlsRef.current.enabled = false;
+          scaleControlsRef.current.getHelper().visible = false;
+        }
+      }
     }
   }, [selectObject]);
 
   const exportToGLTF = useCallback(() => {
-    if (!meshRef.current && objectsRef.current.length === 0) {
+    if (objectsRef.current.length === 0) {
       console.error('没有可导出的网格对象');
       return;
     }
@@ -529,12 +529,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     // 创建一个临时场景，包含所有要导出的对象
     const exportScene = new THREE.Scene();
-    
-    // 添加原始立方体
-    if (meshRef.current) {
-      const meshClone = meshRef.current.clone();
-      exportScene.add(meshClone);
-    }
     
     // 添加所有动态创建的物体
     objectsRef.current.forEach(obj => {
@@ -617,16 +611,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     scene.add(gridHelper);
     gridRef.current = gridHelper;
 
-    // 3. Box mesh
-    const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-    const boxMat = new THREE.MeshStandardMaterial({ color: 0x156289 });
-    const mesh = new THREE.Mesh(boxGeo, boxMat);
-    meshRef.current = mesh;
-    scene.add(mesh);
-    
-    // 保存原始位置
-    originalPositionRef.current = mesh.position.clone();
-
     // 4. OrbitControls
     const orbit = new OrbitControls(camera, renderer.domElement);
     orbitRef.current = orbit;
@@ -634,17 +618,15 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     // 5. TransformControls - 创建三个独立的控制器
     // 移动控制器
     const translateCtrl = new TransformControls(camera, renderer.domElement);
-    translateCtrl.attach(mesh);
     translateCtrl.setMode('translate');
     translateCtrl.setTranslationSnap(0.5);
     translateCtrl.showX = true;
     translateCtrl.showY = true;
     translateCtrl.showZ = true;
-    translateCtrl.enabled = true; // 默认启用移动模式
+    translateCtrl.enabled = false; // 默认禁用，等待选择物体
     
     // 旋转控制器
     const rotateCtrl = new TransformControls(camera, renderer.domElement);
-    rotateCtrl.attach(mesh);
     rotateCtrl.setMode('rotate');
     rotateCtrl.setRotationSnap(THREE.MathUtils.degToRad(15));
     rotateCtrl.showX = true;
@@ -654,7 +636,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     // 缩放控制器
     const scaleCtrl = new TransformControls(camera, renderer.domElement);
-    scaleCtrl.attach(mesh);
     scaleCtrl.setMode('scale');
     scaleCtrl.setScaleSnap(0.1);
     scaleCtrl.showX = true;
@@ -687,13 +668,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     scene.add(rotateCtrl.getHelper());
     scene.add(scaleCtrl.getHelper());
 
-    // 设置初始可见性 - 只显示移动控制器
-    translateCtrl.getHelper().visible = true;
+    // 设置初始可见性 - 默认隐藏所有控制器
+    translateCtrl.getHelper().visible = false;
     rotateCtrl.getHelper().visible = false;
     scaleCtrl.getHelper().visible = false;
-
-    // 默认选中原始立方体
-    selectObject(mesh);
 
     // 添加鼠标点击事件监听器
     const handleClick = (event: MouseEvent) => {
@@ -1161,7 +1139,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: '1px solid #ce93d8'
           }}>
-            📊 物体数量: {objects.length + 1}
+            📊 物体数量: {objects.length}
           </div>
           <div style={{
             fontSize: '12px',
@@ -1171,7 +1149,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: '1px solid #ffcc02'
           }}>
-            🎯 选中: {selectedObject === meshRef.current ? '原始立方体' : '动态物体'}
+            🎯 选中: {selectedObject ? '动态物体' : '无'}
           </div>
           <div style={{
             fontSize: '12px',
