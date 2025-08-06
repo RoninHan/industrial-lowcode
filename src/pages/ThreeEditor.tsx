@@ -14,6 +14,7 @@ type TransformBoxProps = {
 // 物体信息接口
 interface ObjectInfo {
   id: string;
+  name: string; // 添加名称字段
   type: 'cube' | 'sphere' | 'cylinder' | 'cone';
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
@@ -35,8 +36,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   const meshRef = useRef<THREE.Mesh | null>(null);
   const frameIdRef = useRef<number | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const animationTimeRef = useRef<number>(0);
-  const originalPositionRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   
@@ -45,7 +44,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   const rotateControlsRef = useRef<TransformControls | null>(null);
   const scaleControlsRef = useRef<TransformControls | null>(null);
   
-  const [isAnimating, setIsAnimating] = useState<boolean>(false);
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const gridRef = useRef<THREE.GridHelper | null>(null);
@@ -60,6 +58,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   
   // 数据查看功能状态
   const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
+
+  // 属性编辑面板状态
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState<boolean>(true);
 
   // 获取当前活动的TransformControls
   const getCurrentControls = useCallback(() => {
@@ -79,85 +80,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     frameIdRef.current = requestAnimationFrame(() => {
       orbitRef.current?.update();
       
-      // 动画逻辑 - 仅在有选中物体且开启动画时执行
-      if (isAnimating && selectedObjectRef.current) {
-        animationTimeRef.current += 0.016; // 约60fps
-        updateCubeAnimation();
-      }
-      
       renderer.render(scene, camera);
       animate(scene, camera, renderer);
     });
-  }, [isAnimating]);
-
-  // 选中物体动画更新函数
-  const updateCubeAnimation = useCallback(() => {
-    if (!selectedObjectRef.current) return;
-
-    const time = animationTimeRef.current;
-    const cycleDuration = 8; // 一个完整循环8秒
-    const progress = (time % cycleDuration) / cycleDuration;
-    
-    const originalPos = originalPositionRef.current;
-    const moveDistance = 2; // 移动距离
-    
-    let x = originalPos.x;
-    let y = originalPos.y;
-    let z = originalPos.z;
-
-    if (progress < 0.25) {
-      // 阶段1: 向上移动 (0-25%)
-      const t = progress / 0.25;
-      y = originalPos.y + moveDistance * t;
-    } else if (progress < 0.5) {
-      // 阶段2: 向右移动 (25-50%)
-      const t = (progress - 0.25) / 0.25;
-      y = originalPos.y + moveDistance;
-      x = originalPos.x + moveDistance * t;
-    } else if (progress < 0.75) {
-      // 阶段3: 向下移动 (50-75%)
-      const t = (progress - 0.5) / 0.25;
-      y = originalPos.y + moveDistance * (1 - t);
-      x = originalPos.x + moveDistance;
-    } else {
-      // 阶段4: 向左返回原位 (75-100%)
-      const t = (progress - 0.75) / 0.25;
-      y = originalPos.y;
-      x = originalPos.x + moveDistance * (1 - t);
-    }
-
-    selectedObjectRef.current.position.set(x, y, z);
-    
-    // 触发位置变化回调
-    if (onPosChanged) {
-      onPosChanged(selectedObjectRef.current.position.clone());
-    }
-  }, [onPosChanged]);
-
-  // 开始/停止动画
-  const toggleAnimation = useCallback(() => {
-    setIsAnimating(prev => {
-      const newState = !prev;
-      if (newState) {
-        // 开始动画时记录当前选中物体的位置
-        if (selectedObjectRef.current) {
-          originalPositionRef.current = selectedObjectRef.current.position.clone();
-        }
-        animationTimeRef.current = 0;
-        // 禁用所有变换控制器
-        if (translateControlsRef.current) translateControlsRef.current.enabled = false;
-        if (rotateControlsRef.current) rotateControlsRef.current.enabled = false;
-        if (scaleControlsRef.current) scaleControlsRef.current.enabled = false;
-      } else {
-        // 重新启用当前模式的变换控制器
-        const currentControls = getCurrentControls();
-        if (currentControls && selectedObjectRef.current) {
-          currentControls.enabled = true;
-        }
-      }
-      return newState;
-    });
-  }, [getCurrentControls]);
+  }, []);
 
   // 切换网格显示
   const toggleGrid = useCallback(() => {
@@ -206,15 +132,15 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       }
       
       if (currentControls) {
-        // 只有在动画未播放时才启用控制器
-        currentControls.enabled = !isAnimating;
+        // 启用控制器并显示helper
+        currentControls.enabled = true;
         currentControls.getHelper().visible = true;
         controlsRef.current = currentControls; // 更新当前活动控制器引用
       }
       
-      console.log('成功切换到变换模式:', mode, '动画状态:', isAnimating);
+      console.log('成功切换到变换模式:', mode);
     }
-  }, [isAnimating]);
+  }, []);
 
   // 处理容器尺寸变化
   const handleResize = useCallback(() => {
@@ -269,10 +195,47 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
   }, []);
 
+  // 更新选中物体的属性
+  const updateSelectedObjectProperty = useCallback((
+    property: 'name' | 'position' | 'rotation' | 'scale', 
+    axis: 'x' | 'y' | 'z' | null, 
+    value: string | number
+  ) => {
+    if (!selectedObjectRef.current) return;
+
+    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObjectRef.current);
+    if (!objectInfo) return;
+
+    const mesh = selectedObjectRef.current;
+    
+    if (property === 'name') {
+      objectInfo.name = value as string;
+    } else if (axis) {
+      const numValue = typeof value === 'string' ? parseFloat(value) : value;
+      if (isNaN(numValue)) return;
+
+      // 更新物体信息
+      (objectInfo[property] as any)[axis] = numValue;
+
+      // 更新mesh的实际属性
+      if (property === 'position') {
+        mesh.position[axis] = numValue;
+      } else if (property === 'rotation') {
+        mesh.rotation[axis] = numValue;
+      } else if (property === 'scale') {
+        mesh.scale[axis] = numValue;
+      }
+    }
+
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+  }, []);
+
   // 导出物体数据为JSON
   const exportObjectsData = useCallback(() => {
     const exportData = objectsInfo.map(info => ({
       id: info.id,
+      name: info.name,
       type: info.type,
       position: info.position,
       rotation: info.rotation,
@@ -293,36 +256,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     URL.revokeObjectURL(url);
     console.log('场景数据已导出为JSON文件');
-  }, [objectsInfo]);
-
-  // 复制数据到剪贴板
-  const copyDataToClipboard = useCallback(async () => {
-    const exportData = objectsInfo.map(info => ({
-      id: info.id,
-      type: info.type,
-      position: info.position,
-      rotation: info.rotation,
-      scale: info.scale,
-      color: info.color
-    }));
-    
-    const dataStr = JSON.stringify(exportData, null, 2);
-    
-    try {
-      await navigator.clipboard.writeText(dataStr);
-      console.log('场景数据已复制到剪贴板');
-      // 可以添加一个临时的提示消息
-    } catch (err) {
-      console.error('复制到剪贴板失败:', err);
-      // 降级方案：选择文本
-      const textarea = document.createElement('textarea');
-      textarea.value = dataStr;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      console.log('场景数据已复制到剪贴板（降级方案）');
-    }
   }, [objectsInfo]);
 
   // 计算场景统计信息
@@ -473,6 +406,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     // 创建物体信息
     const objectInfo: ObjectInfo = {
       id: objectId,
+      name: `${type}_${objectId.slice(0, 8)}`, // 默认名称
       type,
       position: { x, y, z },
       rotation: { x: 0, y: 0, z: 0 },
@@ -540,8 +474,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             scaleControlsRef.current.getHelper().visible = false;
           }
           
-          // 启用当前控制器并显示helper（考虑动画状态）
-          currentControls.enabled = !isAnimating;
+          // 启用当前控制器并显示helper
+          currentControls.enabled = true;
           currentControls.getHelper().visible = true;
           controlsRef.current = currentControls;
         }
@@ -553,7 +487,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
 
     console.log(`添加了${type}，当前物体数量:`, objectsInfoRef.current.length, '物体ID:', objectId);
-  }, [transformMode, isAnimating, createUUID]);
+  }, [transformMode, createUUID]);
 
   // 清空所有添加的物体
   const clearObjects = useCallback(() => {
@@ -641,6 +575,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       // 创建物体信息
       const objectInfo: ObjectInfo = {
         ...data,
+        name: data.name || `${data.type}_${data.id.slice(0, 8)}`, // 如果没有名称则生成默认名称
         mesh
       };
       
@@ -731,8 +666,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         scaleControlsRef.current.getHelper().visible = false;
       }
       
-      // 启用当前模式的控制器并显示helper（考虑动画状态）
-      currentControls.enabled = !isAnimating;
+      // 启用当前模式的控制器并显示helper
+      currentControls.enabled = true;
       currentControls.getHelper().visible = true;
       controlsRef.current = currentControls;
     }
@@ -742,7 +677,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     material.emissive.setHex(0x444444); // 添加发光效果表示选中
     
     console.log('选中物体:', mesh === meshRef.current ? '原始立方体' : '动态物体', '变换模式:', transformMode);
-  }, [transformMode, getCurrentControls, isAnimating]);
+  }, [transformMode, getCurrentControls]);
 
   // 处理鼠标点击事件选择物体
   const handleObjectClick = useCallback((event: MouseEvent) => {
@@ -876,7 +811,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     rendererRef.current = renderer;
 
     // 2. Helpers & Lights
-    scene.add(new THREE.AxesHelper(5));
+    // scene.add(new THREE.AxesHelper(5)); // 隐藏轴向线
     const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
     scene.add(hemi);
 
@@ -1025,7 +960,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       orbit.dispose();
       renderer.dispose();
     };
-  }, [onPosChanged, animate, exportToGLTF, updateCubeAnimation, toggleGrid, gridSize, gridDivisions, handleResize]);
+  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize]);
 
   // 暴露导出功能
   const handleExportClick = () => {
@@ -1072,41 +1007,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             title="导出当前场景为GLTF格式"
           >
             📁 导出GLTF
-          </button>
-        </div>
-
-        {/* 分隔线 */}
-        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
-
-        {/* 动画菜单 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>动画</span>
-          <button 
-            onClick={toggleAnimation}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: isAnimating ? '#f44336' : '#4caf50',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              const hoverBg = isAnimating ? '#d32f2f' : '#388e3c';
-              e.currentTarget.style.backgroundColor = hoverBg;
-            }}
-            onMouseOut={(e) => {
-              const currentBg = isAnimating ? '#f44336' : '#4caf50';
-              e.currentTarget.style.backgroundColor = currentBg;
-            }}
-            title={isAnimating ? '停止立方体动画' : '开始立方体循环动画'}
-          >
-            {isAnimating ? '⏹️ 停止' : '▶️ 播放'}
           </button>
         </div>
 
@@ -1373,6 +1273,35 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           >
             {isFullscreen ? '🔙 退出' : '⛶ 全屏'}
           </button>
+
+          {/* 属性面板按钮 */}
+          <button
+            onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: showPropertiesPanel ? '#4caf50' : '#9e9e9e',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              const hoverBg = showPropertiesPanel ? '#388e3c' : '#757575';
+              e.currentTarget.style.backgroundColor = hoverBg;
+            }}
+            onMouseOut={(e) => {
+              const currentBg = showPropertiesPanel ? '#4caf50' : '#9e9e9e';
+              e.currentTarget.style.backgroundColor = currentBg;
+            }}
+            title={showPropertiesPanel ? '隐藏属性面板' : '显示属性面板'}
+          >
+            {showPropertiesPanel ? '🔧 隐藏属性' : '🔧 属性面板'}
+          </button>
         </div>
 
         {/* 分隔线 */}
@@ -1458,77 +1387,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           >
             📂 导入数据
           </button>
-          <button 
-            onClick={copyDataToClipboard}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#9c27b0',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#7b1fa2';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#9c27b0';
-            }}
-            title="复制场景数据到剪贴板"
-          >
-            � 复制数据
-          </button>
-          <button 
-            onClick={() => {
-              // 测试恢复场景功能
-              const testData = [
-                {
-                  id: 'test-1',
-                  type: 'cube' as const,
-                  position: { x: 1, y: 1, z: 1 },
-                  rotation: { x: 0, y: Math.PI / 4, z: 0 },
-                  scale: { x: 1.5, y: 1.5, z: 1.5 },
-                  color: 0xff0000
-                },
-                {
-                  id: 'test-2',
-                  type: 'sphere' as const,
-                  position: { x: -2, y: 2, z: 0 },
-                  rotation: { x: 0, y: 0, z: 0 },
-                  scale: { x: 1, y: 1, z: 1 },
-                  color: 0x00ff00
-                }
-              ];
-              restoreSceneFromData(testData);
-            }}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#8bc34a',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = '#689f38';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = '#8bc34a';
-            }}
-            title="测试恢复场景功能"
-          >
-            🔄 测试恢复
-          </button>
         </div>
 
         {/* 分隔线 */}
@@ -1536,16 +1394,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
         {/* 状态信息 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' }}>
-          <div style={{
-            fontSize: '12px',
-            color: '#666',
-            backgroundColor: isAnimating ? '#ffebee' : '#e8f5e8',
-            padding: '4px 8px',
-            borderRadius: '12px',
-            border: `1px solid ${isAnimating ? '#ffcdd2' : '#c8e6c9'}`
-          }}>
-            {isAnimating ? '🔄 动画运行中' : '⏸️ 静态模式'}
-          </div>
           <div style={{
             fontSize: '12px',
             color: '#666',
@@ -1599,17 +1447,390 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </div>
       </div>
 
-      {/* 3D场景容器 */}
-      <div
-        ref={containerRef}
-        style={{ 
-          flex: 1,
-          width: '100%',
-          minHeight: 0, // 重要：允许flex子项收缩
-          touchAction: 'none',
-          overflow: 'hidden'
-        }}
-      />
+      {/* 主内容区域 */}
+      <div style={{ 
+        flex: 1, 
+        display: 'flex', 
+        minHeight: 0,
+        overflow: 'hidden'
+      }}>
+        {/* 3D场景容器 */}
+        <div
+          ref={containerRef}
+          style={{ 
+            flex: showPropertiesPanel ? '1' : '1',
+            width: showPropertiesPanel ? 'calc(100% - 320px)' : '100%',
+            minHeight: 0,
+            touchAction: 'none',
+            overflow: 'hidden',
+            transition: 'width 0.3s ease'
+          }}
+        />
+
+        {/* 右侧属性面板 */}
+        {showPropertiesPanel && (
+          <div style={{
+            width: '320px',
+            backgroundColor: '#fafafa',
+            borderLeft: '1px solid #d9d9d9',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            flexShrink: 0
+          }}>
+            {/* 面板标题 */}
+            <div style={{
+              padding: '12px 16px',
+              backgroundColor: '#f5f5f5',
+              borderBottom: '1px solid #d9d9d9',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <h3 style={{ 
+                margin: 0, 
+                fontSize: '16px', 
+                fontWeight: 'bold', 
+                color: '#333' 
+              }}>
+                🔧 物体属性
+              </h3>
+              <button
+                onClick={() => setShowPropertiesPanel(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '18px',
+                  cursor: 'pointer',
+                  color: '#666',
+                  padding: '4px'
+                }}
+                title="关闭属性面板"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 面板内容 */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px'
+            }}>
+              {selectedObject ? (() => {
+                const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
+                if (!objectInfo) return <div style={{ textAlign: 'center', color: '#999' }}>无法获取物体信息</div>;
+
+                return (
+                  <div>
+                    {/* 基本信息 */}
+                    <div style={{ marginBottom: '24px' }}>
+                      <h4 style={{ 
+                        margin: '0 0 12px 0', 
+                        fontSize: '14px', 
+                        fontWeight: 'bold', 
+                        color: '#333',
+                        borderBottom: '2px solid #e0e0e0',
+                        paddingBottom: '8px'
+                      }}>
+                        📋 基本信息
+                      </h4>
+                      
+                      {/* 物体名称 */}
+                      <div style={{ marginBottom: '12px' }}>
+                        <label style={{ 
+                          display: 'block', 
+                          fontSize: '12px', 
+                          fontWeight: 'bold', 
+                          color: '#666',
+                          marginBottom: '4px'
+                        }}>
+                          名称
+                        </label>
+                        <input
+                          type="text"
+                          value={objectInfo.name}
+                          onChange={(e) => updateSelectedObjectProperty('name', null, e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '8px',
+                            fontSize: '12px',
+                            border: '1px solid #d9d9d9',
+                            borderRadius: '4px',
+                            boxSizing: 'border-box'
+                          }}
+                          placeholder="输入物体名称"
+                        />
+                      </div>
+
+                      {/* 物体类型 */}
+                      <div style={{ marginBottom: '12px' }}>
+                        <label style={{ 
+                          display: 'block', 
+                          fontSize: '12px', 
+                          fontWeight: 'bold', 
+                          color: '#666',
+                          marginBottom: '4px'
+                        }}>
+                          类型
+                        </label>
+                        <div style={{
+                          padding: '8px',
+                          fontSize: '12px',
+                          backgroundColor: '#f5f5f5',
+                          border: '1px solid #e0e0e0',
+                          borderRadius: '4px',
+                          color: '#333'
+                        }}>
+                          {objectInfo.type}
+                        </div>
+                      </div>
+
+                      {/* 颜色 */}
+                      <div style={{ marginBottom: '12px' }}>
+                        <label style={{ 
+                          display: 'block', 
+                          fontSize: '12px', 
+                          fontWeight: 'bold', 
+                          color: '#666',
+                          marginBottom: '4px'
+                        }}>
+                          颜色
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <div style={{ 
+                            width: '32px', 
+                            height: '32px', 
+                            backgroundColor: `#${objectInfo.color.toString(16).padStart(6, '0')}`,
+                            border: '2px solid #ccc',
+                            borderRadius: '4px'
+                          }}></div>
+                          <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
+                            #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 位置 */}
+                    <div style={{ marginBottom: '24px' }}>
+                      <h4 style={{ 
+                        margin: '0 0 12px 0', 
+                        fontSize: '14px', 
+                        fontWeight: 'bold', 
+                        color: '#333',
+                        borderBottom: '2px solid #e0e0e0',
+                        paddingBottom: '8px'
+                      }}>
+                        📍 位置
+                      </h4>
+                      {(['x', 'y', 'z'] as const).map(axis => (
+                        <div key={axis} style={{ marginBottom: '8px' }}>
+                          <label style={{ 
+                            display: 'block', 
+                            fontSize: '11px', 
+                            fontWeight: 'bold', 
+                            color: '#666',
+                            marginBottom: '4px'
+                          }}>
+                            {axis.toUpperCase()}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={objectInfo.position[axis].toFixed(2)}
+                            onChange={(e) => updateSelectedObjectProperty('position', axis, e.target.value)}
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              fontSize: '11px',
+                              border: '1px solid #d9d9d9',
+                              borderRadius: '4px',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* 旋转 */}
+                    <div style={{ marginBottom: '24px' }}>
+                      <h4 style={{ 
+                        margin: '0 0 12px 0', 
+                        fontSize: '14px', 
+                        fontWeight: 'bold', 
+                        color: '#333',
+                        borderBottom: '2px solid #e0e0e0',
+                        paddingBottom: '8px'
+                      }}>
+                        🔄 旋转 (度)
+                      </h4>
+                      {(['x', 'y', 'z'] as const).map(axis => (
+                        <div key={axis} style={{ marginBottom: '8px' }}>
+                          <label style={{ 
+                            display: 'block', 
+                            fontSize: '11px', 
+                            fontWeight: 'bold', 
+                            color: '#666',
+                            marginBottom: '4px'
+                          }}>
+                            {axis.toUpperCase()}
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            value={(objectInfo.rotation[axis] * 180 / Math.PI).toFixed(1)}
+                            onChange={(e) => {
+                              const radians = parseFloat(e.target.value) * Math.PI / 180;
+                              updateSelectedObjectProperty('rotation', axis, radians);
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              fontSize: '11px',
+                              border: '1px solid #d9d9d9',
+                              borderRadius: '4px',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* 缩放 */}
+                    <div style={{ marginBottom: '24px' }}>
+                      <h4 style={{ 
+                        margin: '0 0 12px 0', 
+                        fontSize: '14px', 
+                        fontWeight: 'bold', 
+                        color: '#333',
+                        borderBottom: '2px solid #e0e0e0',
+                        paddingBottom: '8px'
+                      }}>
+                        📏 缩放
+                      </h4>
+                      {(['x', 'y', 'z'] as const).map(axis => (
+                        <div key={axis} style={{ marginBottom: '8px' }}>
+                          <label style={{ 
+                            display: 'block', 
+                            fontSize: '11px', 
+                            fontWeight: 'bold', 
+                            color: '#666',
+                            marginBottom: '4px'
+                          }}>
+                            {axis.toUpperCase()}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.1"
+                            value={objectInfo.scale[axis].toFixed(2)}
+                            onChange={(e) => updateSelectedObjectProperty('scale', axis, e.target.value)}
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              fontSize: '11px',
+                              border: '1px solid #d9d9d9',
+                              borderRadius: '4px',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* 快速操作 */}
+                    <div style={{ marginBottom: '24px' }}>
+                      <h4 style={{ 
+                        margin: '0 0 12px 0', 
+                        fontSize: '14px', 
+                        fontWeight: 'bold', 
+                        color: '#333',
+                        borderBottom: '2px solid #e0e0e0',
+                        paddingBottom: '8px'
+                      }}>
+                        ⚡ 快速操作
+                      </h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <button
+                          onClick={() => {
+                            updateSelectedObjectProperty('position', 'x', 0);
+                            updateSelectedObjectProperty('position', 'y', 0);
+                            updateSelectedObjectProperty('position', 'z', 0);
+                          }}
+                          style={{
+                            padding: '8px',
+                            backgroundColor: '#2196f3',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          📍 重置位置
+                        </button>
+                        <button
+                          onClick={() => {
+                            updateSelectedObjectProperty('rotation', 'x', 0);
+                            updateSelectedObjectProperty('rotation', 'y', 0);
+                            updateSelectedObjectProperty('rotation', 'z', 0);
+                          }}
+                          style={{
+                            padding: '8px',
+                            backgroundColor: '#ff9800',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          🔄 重置旋转
+                        </button>
+                        <button
+                          onClick={() => {
+                            updateSelectedObjectProperty('scale', 'x', 1);
+                            updateSelectedObjectProperty('scale', 'y', 1);
+                            updateSelectedObjectProperty('scale', 'z', 1);
+                          }}
+                          style={{
+                            padding: '8px',
+                            backgroundColor: '#4caf50',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          📏 重置缩放
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : (
+                <div style={{ 
+                  textAlign: 'center', 
+                  padding: '40px 20px', 
+                  color: '#999',
+                  fontSize: '14px'
+                }}>
+                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎯</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
+                  <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                    请点击场景中的物体来选择并编辑其属性
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* 数据面板 */}
       {showDataPanel && (
@@ -1736,7 +1957,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                         <strong style={{ color: '#333' }}>
-                          #{index + 1} {info.type}
+                          #{index + 1} {info.name}
                         </strong>
                         <div style={{ 
                           width: '16px', 
@@ -1747,7 +1968,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         }}></div>
                       </div>
                       <div style={{ color: '#666', fontFamily: 'monospace', lineHeight: '1.4' }}>
-                        <div>ID: {info.id.slice(0, 8)}...</div>
+                        <div>类型: {info.type}</div>
                         <div>位置: ({info.position.x.toFixed(2)}, {info.position.y.toFixed(2)}, {info.position.z.toFixed(2)})</div>
                         <div>旋转: ({(info.rotation.x * 180 / Math.PI).toFixed(1)}°, {(info.rotation.y * 180 / Math.PI).toFixed(1)}°, {(info.rotation.z * 180 / Math.PI).toFixed(1)}°)</div>
                         <div>缩放: ({info.scale.x.toFixed(2)}, {info.scale.y.toFixed(2)}, {info.scale.z.toFixed(2)})</div>
@@ -1769,6 +1990,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                     console.log('当前物体信息:', objectsInfo);
                     console.log('JSON格式:', JSON.stringify(objectsInfo.map(info => ({
                       id: info.id,
+                      name: info.name,
                       type: info.type,
                       position: info.position,
                       rotation: info.rotation,
@@ -1796,6 +2018,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                     const testData = [
                       {
                         id: 'test-1',
+                        name: 'Test Cube',
                         type: 'cube' as const,
                         position: { x: 1, y: 1, z: 1 },
                         rotation: { x: 0, y: Math.PI / 4, z: 0 },
@@ -1804,6 +2027,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                       },
                       {
                         id: 'test-2',
+                        name: 'Test Sphere',
                         type: 'sphere' as const,
                         position: { x: -2, y: 2, z: 0 },
                         rotation: { x: 0, y: 0, z: 0 },
