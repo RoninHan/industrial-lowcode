@@ -123,19 +123,20 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       const newState = !prev;
       if (newState) {
         animationTimeRef.current = 0;
-        // 禁用变换控制器
-        if (controlsRef.current) {
-          controlsRef.current.enabled = false;
-        }
+        // 禁用所有变换控制器
+        if (translateControlsRef.current) translateControlsRef.current.enabled = false;
+        if (rotateControlsRef.current) rotateControlsRef.current.enabled = false;
+        if (scaleControlsRef.current) scaleControlsRef.current.enabled = false;
       } else {
-        // 启用变换控制器
-        if (controlsRef.current) {
-          controlsRef.current.enabled = true;
+        // 重新启用当前模式的变换控制器
+        const currentControls = getCurrentControls();
+        if (currentControls) {
+          currentControls.enabled = true;
         }
       }
       return newState;
     });
-  }, []);
+  }, [getCurrentControls]);
 
   // 切换网格显示
   const toggleGrid = useCallback(() => {
@@ -155,12 +156,21 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     setTransformMode(mode);
     
     if (selectedObjectRef.current) {
-      // 禁用所有控制器
-      if (translateControlsRef.current) translateControlsRef.current.enabled = false;
-      if (rotateControlsRef.current) rotateControlsRef.current.enabled = false;
-      if (scaleControlsRef.current) scaleControlsRef.current.enabled = false;
+      // 禁用所有控制器并隐藏helper
+      if (translateControlsRef.current) {
+        translateControlsRef.current.enabled = false;
+        translateControlsRef.current.getHelper().visible = false;
+      }
+      if (rotateControlsRef.current) {
+        rotateControlsRef.current.enabled = false;
+        rotateControlsRef.current.getHelper().visible = false;
+      }
+      if (scaleControlsRef.current) {
+        scaleControlsRef.current.enabled = false;
+        scaleControlsRef.current.getHelper().visible = false;
+      }
       
-      // 启用对应的控制器（不重新attach）
+      // 启用对应的控制器并显示helper
       let currentControls = null;
       switch (mode) {
         case 'translate':
@@ -175,13 +185,15 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       }
       
       if (currentControls) {
-        currentControls.enabled = true;
+        // 只有在动画未播放时才启用控制器
+        currentControls.enabled = !isAnimating;
+        currentControls.getHelper().visible = true;
         controlsRef.current = currentControls; // 更新当前活动控制器引用
       }
       
-      console.log('成功切换到变换模式:', mode);
+      console.log('成功切换到变换模式:', mode, '动画状态:', isAnimating);
     }
-  }, []);
+  }, [isAnimating]);
 
   // 处理容器尺寸变化
   const handleResize = useCallback(() => {
@@ -329,13 +341,17 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       }
       
       if (currentControls) {
-        // 禁用所有控制器
+        // 禁用所有控制器并隐藏helper
         translateControlsRef.current.enabled = false;
+        translateControlsRef.current.getHelper().visible = false;
         rotateControlsRef.current.enabled = false;
+        rotateControlsRef.current.getHelper().visible = false;
         scaleControlsRef.current.enabled = false;
+        scaleControlsRef.current.getHelper().visible = false;
         
-        // 启用当前控制器
-        currentControls.enabled = true;
+        // 启用当前控制器并显示helper（考虑动画状态）
+        currentControls.enabled = !isAnimating;
+        currentControls.getHelper().visible = true;
         controlsRef.current = currentControls;
       }
       
@@ -345,7 +361,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
 
     console.log(`添加了${type}，当前物体数量:`, objectsRef.current.length + 1); // +1 包含原始立方体
-  }, [transformMode]);
+  }, [transformMode, isAnimating]);
 
   // 清空所有添加的物体
   const clearObjects = useCallback(() => {
@@ -397,13 +413,17 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         }
         
         if (currentControls) {
-          // 禁用所有控制器
+          // 禁用所有控制器并隐藏helper
           translateControlsRef.current.enabled = false;
+          translateControlsRef.current.getHelper().visible = false;
           rotateControlsRef.current.enabled = false;
+          rotateControlsRef.current.getHelper().visible = false;
           scaleControlsRef.current.enabled = false;
+          scaleControlsRef.current.getHelper().visible = false;
           
-          // 启用当前控制器
-          currentControls.enabled = true;
+          // 启用当前控制器并显示helper（考虑动画状态）
+          currentControls.enabled = !isAnimating;
+          currentControls.getHelper().visible = true;
           controlsRef.current = currentControls;
         }
         
@@ -414,7 +434,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
     
     console.log('已清空所有添加的物体');
-  }, [transformMode]);
+  }, [transformMode, isAnimating]);
 
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
@@ -441,6 +461,23 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     // 设置当前活动的控制器
     const currentControls = getCurrentControls();
     if (currentControls) {
+      // 禁用所有控制器并隐藏helper
+      if (translateControlsRef.current) {
+        translateControlsRef.current.enabled = false;
+        translateControlsRef.current.getHelper().visible = false;
+      }
+      if (rotateControlsRef.current) {
+        rotateControlsRef.current.enabled = false;
+        rotateControlsRef.current.getHelper().visible = false;
+      }
+      if (scaleControlsRef.current) {
+        scaleControlsRef.current.enabled = false;
+        scaleControlsRef.current.getHelper().visible = false;
+      }
+      
+      // 启用当前模式的控制器并显示helper（考虑动画状态）
+      currentControls.enabled = !isAnimating;
+      currentControls.getHelper().visible = true;
       controlsRef.current = currentControls;
     }
     
@@ -449,7 +486,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     material.emissive.setHex(0x444444); // 添加发光效果表示选中
     
     console.log('选中物体:', mesh === meshRef.current ? '原始立方体' : '动态物体', '变换模式:', transformMode);
-  }, [transformMode, getCurrentControls]);
+  }, [transformMode, getCurrentControls, isAnimating]);
 
   // 处理鼠标点击事件选择物体
   const handleObjectClick = useCallback((event: MouseEvent) => {
@@ -649,6 +686,11 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     scene.add(translateCtrl.getHelper());
     scene.add(rotateCtrl.getHelper());
     scene.add(scaleCtrl.getHelper());
+
+    // 设置初始可见性 - 只显示移动控制器
+    translateCtrl.getHelper().visible = true;
+    rotateCtrl.getHelper().visible = false;
+    scaleCtrl.getHelper().visible = false;
 
     // 默认选中原始立方体
     selectObject(mesh);
