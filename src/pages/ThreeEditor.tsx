@@ -11,6 +11,17 @@ type TransformBoxProps = {
   gridDivisions?: number;
 };
 
+// 物体信息接口
+interface ObjectInfo {
+  id: string;
+  type: 'cube' | 'sphere' | 'cylinder' | 'cone';
+  position: { x: number; y: number; z: number };
+  rotation: { x: number; y: number; z: number };
+  scale: { x: number; y: number; z: number };
+  color: number;
+  mesh?: THREE.Mesh; // 运行时的mesh引用
+}
+
 
 const ThreeEditor: React.FC<TransformBoxProps> = ({
   onPosChanged,
@@ -38,11 +49,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const gridRef = useRef<THREE.GridHelper | null>(null);
-  const [objects, setObjects] = useState<THREE.Mesh[]>([]); // 存储所有添加的物体
   const objectsRef = useRef<THREE.Mesh[]>([]); // 用于在useEffect中访问最新的objects数组
   const [selectedObject, setSelectedObject] = useState<THREE.Mesh | null>(null); // 当前选中的物体
   const selectedObjectRef = useRef<THREE.Mesh | null>(null);
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate'); // 变换模式
+  
+  // 新增：物体信息数组状态
+  const [objectsInfo, setObjectsInfo] = useState<ObjectInfo[]>([]);
+  const objectsInfoRef = useRef<ObjectInfo[]>([]);
 
   // 获取当前活动的TransformControls
   const getCurrentControls = useCallback(() => {
@@ -71,7 +85,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       renderer.render(scene, camera);
       animate(scene, camera, renderer);
     });
-  }, [isAnimating, transformMode]);
+  }, [isAnimating]);
 
   // 选中物体动画更新函数
   const updateCubeAnimation = useCallback(() => {
@@ -220,6 +234,38 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     });
   }, []);
 
+  // 更新物体信息
+  const updateObjectInfo = useCallback((mesh: THREE.Mesh) => {
+    const objectInfo = objectsInfoRef.current.find(info => info.mesh === mesh);
+    if (objectInfo) {
+      // 更新位置、旋转、缩放信息
+      objectInfo.position = {
+        x: mesh.position.x,
+        y: mesh.position.y,
+        z: mesh.position.z
+      };
+      objectInfo.rotation = {
+        x: mesh.rotation.x,
+        y: mesh.rotation.y,
+        z: mesh.rotation.z
+      };
+      objectInfo.scale = {
+        x: mesh.scale.x,
+        y: mesh.scale.y,
+        z: mesh.scale.z
+      };
+      
+      // 更新状态
+      setObjectsInfo([...objectsInfoRef.current]);
+      
+      console.log('更新物体信息:', objectInfo.id, {
+        position: objectInfo.position,
+        rotation: objectInfo.rotation,
+        scale: objectInfo.scale
+      });
+    }
+  }, []);
+
   // 切换全屏
   const toggleFullscreen = useCallback(() => {
     const container = containerRef.current?.parentElement; // 获取整个ThreeEditor容器
@@ -312,14 +358,31 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(x, y, z);
 
+    // 生成唯一ID
+    const objectId = createUUID();
+    
+    // 创建物体信息
+    const objectInfo: ObjectInfo = {
+      id: objectId,
+      type,
+      position: { x, y, z },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+      color,
+      mesh
+    };
+
     // 添加到场景
     sceneRef.current.add(mesh);
 
-    // 更新状态
-    setObjects(prev => {
-      const newObjects = [...prev, mesh];
-      objectsRef.current = newObjects;
-      return newObjects;
+    // 更新物体引用数组
+    objectsRef.current = [...objectsRef.current, mesh];
+    
+    // 更新物体信息数组
+    setObjectsInfo(prev => {
+      const newObjectsInfo = [...prev, objectInfo];
+      objectsInfoRef.current = newObjectsInfo;
+      return newObjectsInfo;
     });
 
     // 自动选中新创建的物体
@@ -372,8 +435,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       material.emissive.setHex(0x444444);
     }
 
-    console.log(`添加了${type}，当前物体数量:`, objectsRef.current.length + 1); // +1 包含原始立方体
-  }, [transformMode, isAnimating]);
+    console.log(`添加了${type}，当前物体数量:`, objectsInfoRef.current.length, '物体ID:', objectId);
+  }, [transformMode, isAnimating, createUUID]);
 
   // 清空所有添加的物体
   const clearObjects = useCallback(() => {
@@ -389,8 +452,11 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     });
 
     // 更新状态
-    setObjects([]);
     objectsRef.current = [];
+    
+    // 清空物体信息数组
+    setObjectsInfo([]);
+    objectsInfoRef.current = [];
     
     // 取消选择
     if (selectedObjectRef.current) {
@@ -414,8 +480,69 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       }
     }
     
-    console.log('已清空所有添加的物体');
+    console.log('已清空所有添加的物体和物体信息');
   }, []);
+
+  // 从JSON数据恢复场景
+  const restoreSceneFromData = useCallback((objectsData: Omit<ObjectInfo, 'mesh'>[]) => {
+    if (!sceneRef.current) return;
+    
+    console.log('开始恢复场景，物体数量:', objectsData.length);
+    
+    // 先清空现有物体
+    clearObjects();
+    
+    // 重建每个物体
+    objectsData.forEach(data => {
+      let geometry: THREE.BufferGeometry;
+      
+      switch (data.type) {
+        case 'cube':
+          geometry = new THREE.BoxGeometry(1, 1, 1);
+          break;
+        case 'sphere':
+          geometry = new THREE.SphereGeometry(0.5, 32, 32);
+          break;
+        case 'cylinder':
+          geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+          break;
+        case 'cone':
+          geometry = new THREE.ConeGeometry(0.5, 1, 32);
+          break;
+        default:
+          geometry = new THREE.BoxGeometry(1, 1, 1);
+      }
+      
+      const material = new THREE.MeshStandardMaterial({ color: data.color });
+      const mesh = new THREE.Mesh(geometry, material);
+      
+      // 应用保存的变换
+      mesh.position.set(data.position.x, data.position.y, data.position.z);
+      mesh.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
+      mesh.scale.set(data.scale.x, data.scale.y, data.scale.z);
+      
+      // 创建物体信息
+      const objectInfo: ObjectInfo = {
+        ...data,
+        mesh
+      };
+      
+      // 添加到场景
+      sceneRef.current!.add(mesh);
+      
+      // 更新物体引用数组
+      objectsRef.current = [...objectsRef.current, mesh];
+      
+      // 更新物体信息数组
+      setObjectsInfo(prev => {
+        const newObjectsInfo = [...prev, objectInfo];
+        objectsInfoRef.current = newObjectsInfo;
+        return newObjectsInfo;
+      });
+    });
+    
+    console.log('场景恢复完成');
+  }, [clearObjects]);
 
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
@@ -659,6 +786,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         const currentMesh = selectedObjectRef.current;
         if (currentMesh && onPosChanged) {
           onPosChanged(currentMesh.position.clone());
+        }
+        // 更新物体信息
+        if (currentMesh) {
+          updateObjectInfo(currentMesh);
         }
       });
     });
@@ -1099,6 +1230,95 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         {/* 分隔线 */}
         <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
 
+        {/* 调试菜单 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>调试</span>
+          <button 
+            onClick={() => {
+              console.log('当前物体信息:', objectsInfo);
+              console.log('JSON格式:', JSON.stringify(objectsInfo.map(info => ({
+                id: info.id,
+                type: info.type,
+                position: info.position,
+                rotation: info.rotation,
+                scale: info.scale,
+                color: info.color
+              })), null, 2));
+            }}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#607d8b',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = '#455a64';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = '#607d8b';
+            }}
+            title="在控制台查看物体信息JSON"
+          >
+            🐛 查看数据
+          </button>
+          <button 
+            onClick={() => {
+              // 测试恢复场景功能
+              const testData = [
+                {
+                  id: 'test-1',
+                  type: 'cube' as const,
+                  position: { x: 1, y: 1, z: 1 },
+                  rotation: { x: 0, y: Math.PI / 4, z: 0 },
+                  scale: { x: 1.5, y: 1.5, z: 1.5 },
+                  color: 0xff0000
+                },
+                {
+                  id: 'test-2',
+                  type: 'sphere' as const,
+                  position: { x: -2, y: 2, z: 0 },
+                  rotation: { x: 0, y: 0, z: 0 },
+                  scale: { x: 1, y: 1, z: 1 },
+                  color: 0x00ff00
+                }
+              ];
+              restoreSceneFromData(testData);
+            }}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#8bc34a',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = '#689f38';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = '#8bc34a';
+            }}
+            title="测试恢复场景功能"
+          >
+            🔄 测试恢复
+          </button>
+        </div>
+
+        {/* 分隔线 */}
+        <div style={{ height: '24px', width: '1px', backgroundColor: '#d9d9d9' }}></div>
+
         {/* 状态信息 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' }}>
           <div style={{
@@ -1139,7 +1359,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: '1px solid #ce93d8'
           }}>
-            📊 物体数量: {objects.length}
+            📊 物体数量: {objectsInfo.length}
           </div>
           <div style={{
             fontSize: '12px',
