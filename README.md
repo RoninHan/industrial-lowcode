@@ -101,13 +101,7 @@ industrial-lowcode/
 
 ## 🎯 主要功能
 
-### 仪表板
-- 数据统计卡片
-- 快速操作按钮
-- 最近活动记录
-- 实时数据展示
-
-### 3D场景
+### 3D场景編輯導出
 - 3D对象管理
 - 场景交互控制
 - 动态对象添加
@@ -163,25 +157,5 @@ npm run build
 2. 在 `src/mock/index.ts` 中添加Mock数据
 3. 在相关组件中调用API
 
-## 🤝 贡献指南
-
-1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 打开 Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 📞 联系方式
-
-如有问题或建议，请通过以下方式联系：
-
-- 项目地址: [GitHub Repository]
-- 邮箱: [your-email@example.com]
-
----
 
 **工业低代码平台** - 让工业应用开发更简单、更高效！
