@@ -76,7 +76,7 @@ industrial-lowcode/
 │   │   └── Layout.tsx      # 主布局组件
 │   ├── pages/              # 页面组件
 │   │   ├── Dashboard.tsx   # 仪表板
-│   │   ├── ThreeScene.tsx  # 3D场景
+│   │   ├── ThreeEditor.tsx  # 3D场景
 │   │   ├── Charts.tsx      # 图表页面
 │   │   └── LowCodeEditor.tsx # 低代码编辑器
 │   ├── stores/             # MobX状态管理
