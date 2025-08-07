@@ -16,6 +16,7 @@ interface AnimationStep {
 
 interface BlocklyAnimationEditorProps {
   selectedObject: THREE.Mesh | null;
+  existingAnimationSteps?: AnimationStep[]; // 新增：已有的动画步骤
   onAnimationStepsChange?: (steps: AnimationStep[]) => void;
   onPlayAnimation?: (steps: AnimationStep[]) => void;
   onStopAnimation?: () => void;
@@ -154,6 +155,7 @@ const defineAnimationBlocks = () => {
 
 const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
   selectedObject,
+  existingAnimationSteps = [], // 接收已有的动画步骤
   onAnimationStepsChange,
   onPlayAnimation,
   onStopAnimation,
@@ -163,6 +165,141 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
   const blocklyDivRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null);
   const [animationSteps, setAnimationSteps] = useState<AnimationStep[]>([]);
+  const isRestoringRef = useRef<boolean>(false); // 标记是否正在恢复工作区，避免循环
+  const lastRestoredStepsRef = useRef<string>(''); // 记录上次恢复的步骤JSON字符串，避免重复恢复
+
+  // 从动画步骤恢复 Blockly 工作区
+  const restoreAnimationStepsToWorkspace = useCallback((steps: AnimationStep[]) => {
+    if (!workspaceRef.current || steps.length === 0) return;
+
+    // 设置恢复标记，避免在恢复过程中触发解析
+    isRestoringRef.current = true;
+
+    // 清空当前工作区
+    workspaceRef.current.clear();
+
+    let previousBlock: Blockly.Block | null = null;
+
+    steps.forEach((step, index) => {
+      let block: Blockly.Block | null = null;
+
+      switch (step.type) {
+        case 'moveUp':
+        case 'moveDown':
+        case 'moveLeft':
+        case 'moveRight':
+        case 'moveForward':
+        case 'moveBackward':
+          block = workspaceRef.current!.newBlock('move_animation');
+          block.setFieldValue(step.type, 'DIRECTION');
+          
+          // 设置距离值
+          if (step.distance !== undefined) {
+            const distanceBlock = workspaceRef.current!.newBlock('number_value');
+            distanceBlock.setFieldValue(step.distance.toString(), 'VALUE');
+            (distanceBlock as any).initSvg();
+            (distanceBlock as any).render();
+            block.getInput('DISTANCE')?.connection?.connect(distanceBlock.outputConnection!);
+          }
+          
+          // 设置时长值
+          const durationBlock = workspaceRef.current!.newBlock('number_value');
+          durationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (durationBlock as any).initSvg();
+          (durationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(durationBlock.outputConnection!);
+          break;
+
+        case 'rotateX':
+        case 'rotateY':
+        case 'rotateZ':
+          block = workspaceRef.current!.newBlock('rotate_animation');
+          block.setFieldValue(step.type, 'AXIS');
+          
+          // 设置角度值 (需要将弧度转换为度)
+          const angle = step.distance ? step.distance * 180 / Math.PI : 90;
+          const angleBlock = workspaceRef.current!.newBlock('number_value');
+          angleBlock.setFieldValue(angle.toString(), 'VALUE');
+          (angleBlock as any).initSvg();
+          (angleBlock as any).render();
+          block.getInput('ANGLE')?.connection?.connect(angleBlock.outputConnection!);
+          
+          // 设置时长值
+          const rotDurationBlock = workspaceRef.current!.newBlock('number_value');
+          rotDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (rotDurationBlock as any).initSvg();
+          (rotDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(rotDurationBlock.outputConnection!);
+          break;
+
+        case 'scaleUp':
+        case 'scaleDown':
+          block = workspaceRef.current!.newBlock('scale_animation');
+          block.setFieldValue(step.type, 'TYPE');
+          
+          // 设置缩放值
+          if (step.scale !== undefined) {
+            const scaleBlock = workspaceRef.current!.newBlock('number_value');
+            scaleBlock.setFieldValue(step.scale.toString(), 'VALUE');
+            (scaleBlock as any).initSvg();
+            (scaleBlock as any).render();
+            block.getInput('SCALE')?.connection?.connect(scaleBlock.outputConnection!);
+          }
+          
+          // 设置时长值
+          const scaleDurationBlock = workspaceRef.current!.newBlock('number_value');
+          scaleDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (scaleDurationBlock as any).initSvg();
+          (scaleDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(scaleDurationBlock.outputConnection!);
+          break;
+
+        case 'pause':
+          block = workspaceRef.current!.newBlock('pause_animation');
+          
+          // 设置暂停时长
+          const pauseDurationBlock = workspaceRef.current!.newBlock('number_value');
+          pauseDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (pauseDurationBlock as any).initSvg();
+          (pauseDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(pauseDurationBlock.outputConnection!);
+          break;
+
+        default:
+          console.warn('未知的动画步骤类型:', step.type);
+          return;
+      }
+
+      if (block) {
+        // 初始化并渲染块
+        (block as any).initSvg();
+        (block as any).render();
+
+        // 连接到前一个块
+        if (previousBlock && previousBlock.nextConnection && block.previousConnection) {
+          previousBlock.nextConnection.connect(block.previousConnection);
+        }
+
+        // 设置位置
+        if (index === 0) {
+          block.moveBy(20, 20 + index * 100);
+        }
+
+        previousBlock = block;
+      }
+    });
+
+    console.log(`已恢复 ${steps.length} 个动画步骤到 Blockly 工作区`);
+    
+    // 恢复完成后清除标记，但不立即设置状态以避免循环
+    setTimeout(() => {
+      isRestoringRef.current = false;
+      // 只在首次恢复时设置状态，后续由工作区变化监听器处理
+      if (animationSteps.length === 0) {
+        setAnimationSteps(steps);
+      }
+    }, 100);
+  }, [onAnimationStepsChange]);
 
   // 工具箱配置
   const toolboxXml = `
@@ -264,6 +401,9 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
 
     // 监听工作区变化
     workspace.addChangeListener((event: any) => {
+      // 在恢复过程中不触发解析，避免循环
+      if (isRestoringRef.current) return;
+      
       if (event.type === Blockly.Events.BLOCK_CHANGE || 
           event.type === Blockly.Events.BLOCK_CREATE || 
           event.type === Blockly.Events.BLOCK_DELETE ||
@@ -272,6 +412,13 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
       }
     });
 
+    // 如果有已有的动画步骤，恢复到工作区
+    if (existingAnimationSteps.length > 0) {
+      setTimeout(() => {
+        restoreAnimationStepsToWorkspace(existingAnimationSteps);
+      }, 100); // 延迟一点确保工作区完全初始化
+    }
+
     // 清理函数
     return () => {
       if (workspaceRef.current) {
@@ -279,7 +426,32 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
         workspaceRef.current = null;
       }
     };
-  }, [visible]);
+  }, [visible, existingAnimationSteps]);
+
+  // 监听已有动画步骤的变化，当选中物体变化时重新恢复动画
+  useEffect(() => {
+    // 避免在恢复过程中重复触发
+    if (isRestoringRef.current) return;
+    
+    // 检查是否和上次恢复的步骤相同，避免重复恢复
+    const currentStepsString = JSON.stringify(existingAnimationSteps);
+    if (lastRestoredStepsRef.current === currentStepsString) return;
+    
+    if (workspaceRef.current && existingAnimationSteps.length > 0) {
+      lastRestoredStepsRef.current = currentStepsString;
+      setTimeout(() => {
+        restoreAnimationStepsToWorkspace(existingAnimationSteps);
+      }, 100);
+    } else if (workspaceRef.current && existingAnimationSteps.length === 0) {
+      // 如果没有已有动画步骤，清空工作区
+      lastRestoredStepsRef.current = '';
+      isRestoringRef.current = true;
+      workspaceRef.current.clear();
+      setTimeout(() => {
+        isRestoringRef.current = false;
+      }, 100);
+    }
+  }, [existingAnimationSteps, restoreAnimationStepsToWorkspace]);
 
   // 解析工作区为动画步骤
   const parseWorkspaceToAnimationSteps = useCallback(() => {

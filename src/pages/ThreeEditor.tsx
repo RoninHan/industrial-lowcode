@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
@@ -428,6 +428,18 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     console.log('全场景动画已重置到初始状态');
   }, [stopSceneAnimation]);
   
+  // 当前选中物体的动画步骤（缓存以避免重复计算）
+  const currentObjectAnimationSteps = useMemo(() => {
+    if (!selectedObject) return [];
+    
+    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+    if (objectInfo && objectInfo.animations) {
+      const blocklySequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+      return blocklySequence ? blocklySequence.steps : [];
+    }
+    return [];
+  }, [selectedObject, objectsInfo]); // 依赖 objectsInfo 以便动画更新时重新计算
+
   // 数据查看功能状态
   const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
 
@@ -1094,6 +1106,150 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     input.click();
   }, [restoreSceneFromData]);
 
+  // 保存完整项目（包含3D模型、动画、Blockly代码等）
+  const saveProject = useCallback(async () => {
+    try {
+      // 1. 获取所有物体数据（包含动画序列）
+      const objectsData = objectsInfo.map(info => {
+        const animationCount = info.animations?.length || 0;
+        console.log(`保存物体 ${info.name}: 包含 ${animationCount} 个动画序列`);
+        return {
+          id: info.id,
+          name: info.name,
+          type: info.type,
+          position: info.position,
+          rotation: info.rotation,
+          scale: info.scale,
+          color: info.color,
+          animations: info.animations || []
+        };
+      });
+      
+      console.log('保存项目 - 总物体数量:', objectsData.length);
+      console.log('保存项目 - 动画数据统计:', objectsData.map(obj => `${obj.name}: ${obj.animations.length}个动画`));
+
+      // 2. 获取当前选中物体的Blockly工作区状态
+      let blocklyWorkspace = null;
+      if (selectedObject) {
+        // 这里需要从BlocklyAnimationEditor获取工作区XML
+        // 由于组件封装，我们先用一个占位符
+        blocklyWorkspace = {
+          selectedObjectId: objectsInfo.find(info => info.mesh === selectedObject)?.id || null,
+          workspaceXml: null // 这个需要从BlocklyAnimationEditor组件获取
+        };
+      }
+
+      // 3. 获取场景设置
+      const sceneSettings = {
+        gridSize,
+        gridDivisions,
+        showGrid,
+        cameraPosition: cameraRef.current ? {
+          x: cameraRef.current.position.x,
+          y: cameraRef.current.position.y,
+          z: cameraRef.current.position.z
+        } : null,
+        cameraTarget: orbitRef.current ? {
+          x: orbitRef.current.target.x,
+          y: orbitRef.current.target.y,
+          z: orbitRef.current.target.z
+        } : null
+      };
+
+      // 4. 生成GLTF数据（3D模型）
+      let gltfData = null;
+      if (objectsRef.current.length > 0) {
+        const exporter = new GLTFExporter();
+        const exportScene = new THREE.Scene();
+        
+        // 添加所有动态创建的物体
+        objectsRef.current.forEach(obj => {
+          const objClone = obj.clone();
+          exportScene.add(objClone);
+        });
+
+        // 导出为GLTF
+        await new Promise<void>((resolve, reject) => {
+          exporter.parse(
+            exportScene,
+            (gltf) => {
+              gltfData = gltf;
+              resolve();
+            },
+            (error) => {
+              console.error('GLTF导出失败:', error);
+              reject(error);
+            },
+            {
+              binary: false,
+              onlyVisible: true,
+              truncateDrawRange: true,
+              embedImages: true,
+              animations: [],
+              forceIndices: false,
+              includeCustomExtensions: false
+            }
+          );
+        });
+      }
+
+      // 5. 创建项目数据包
+      const projectData = {
+        version: "1.0.0",
+        created: new Date().toISOString(),
+        name: `3D项目_${new Date().toLocaleDateString()}`,
+        description: "Industrial LowCode 3D项目文件",
+        
+        // 场景数据
+        scene: {
+          objects: objectsData,
+          settings: sceneSettings
+        },
+        
+        // 3D模型数据
+        models: gltfData,
+        
+        // 动画和代码数据
+        animations: {
+          blocklyWorkspace,
+          currentAnimationSequence: currentAnimationSequence ? {
+            id: currentAnimationSequence.id,
+            name: currentAnimationSequence.name,
+            steps: currentAnimationSequence.steps
+          } : null
+        },
+        
+        // 元数据
+        metadata: {
+          totalObjects: objectsInfo.length,
+          totalAnimations: objectsInfo.reduce((total, obj) => total + (obj.animations?.length || 0), 0),
+          exportTime: Date.now()
+        }
+      };
+
+      // 6. 创建压缩包或直接下载JSON
+      const dataStr = JSON.stringify(projectData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `3D项目_${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.i3d`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      URL.revokeObjectURL(url);
+      
+      console.log('项目保存成功:', projectData);
+      alert('项目已成功保存！');
+      
+    } catch (error) {
+      console.error('保存项目失败:', error);
+      alert('保存项目失败，请检查控制台错误信息');
+    }
+  }, [objectsInfo, selectedObject, gridSize, gridDivisions, showGrid, currentAnimationSequence]);
+
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
     if (!mesh) return;
@@ -1148,6 +1304,160 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     console.log('选中物体:', mesh === meshRef.current ? '原始立方体' : '动态物体', '变换模式:', transformMode);
   }, [transformMode, getCurrentControls]);
+
+  // 加载完整项目
+  const loadProject = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.i3d,.json';
+    input.onchange = async (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const projectData = JSON.parse(e.target?.result as string);
+            
+            // 验证项目文件格式
+            if (!projectData.version || !projectData.scene) {
+              throw new Error('无效的项目文件格式');
+            }
+            
+            console.log('开始加载项目:', projectData);
+            
+            // 1. 清空当前场景
+            clearObjects();
+            
+            // 2. 恢复场景设置
+            if (projectData.scene.settings) {
+              const settings = projectData.scene.settings;
+              
+              // 恢复相机位置
+              if (settings.cameraPosition && cameraRef.current) {
+                cameraRef.current.position.set(
+                  settings.cameraPosition.x,
+                  settings.cameraPosition.y,
+                  settings.cameraPosition.z
+                );
+              }
+              
+              // 恢复相机目标
+              if (settings.cameraTarget && orbitRef.current) {
+                orbitRef.current.target.set(
+                  settings.cameraTarget.x,
+                  settings.cameraTarget.y,
+                  settings.cameraTarget.z
+                );
+                orbitRef.current.update();
+              }
+              
+              // 恢复网格显示
+              if (typeof settings.showGrid === 'boolean') {
+                setShowGrid(settings.showGrid);
+                if (gridRef.current) {
+                  gridRef.current.visible = settings.showGrid;
+                }
+              }
+            }
+            
+            // 3. 恢复物体数据（包含动画）
+            if (projectData.scene.objects && Array.isArray(projectData.scene.objects)) {
+              // 使用现有的恢复函数，但需要保留动画数据
+              const objectsWithAnimations = projectData.scene.objects;
+              
+              console.log('加载项目 - 物体数量:', objectsWithAnimations.length);
+              console.log('加载项目 - 动画数据统计:', objectsWithAnimations.map((obj: any) => `${obj.name}: ${obj.animations?.length || 0}个动画`));
+              
+              objectsWithAnimations.forEach((data: any) => {
+                let geometry: THREE.BufferGeometry;
+                
+                switch (data.type) {
+                  case 'cube':
+                    geometry = new THREE.BoxGeometry(1, 1, 1);
+                    break;
+                  case 'sphere':
+                    geometry = new THREE.SphereGeometry(0.5, 32, 32);
+                    break;
+                  case 'cylinder':
+                    geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+                    break;
+                  case 'cone':
+                    geometry = new THREE.ConeGeometry(0.5, 1, 32);
+                    break;
+                  default:
+                    geometry = new THREE.BoxGeometry(1, 1, 1);
+                    break;
+                }
+                
+                const material = new THREE.MeshStandardMaterial({ color: data.color });
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // 应用保存的变换
+                mesh.position.set(data.position.x, data.position.y, data.position.z);
+                mesh.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
+                mesh.scale.set(data.scale.x, data.scale.y, data.scale.z);
+                
+                // 创建物体信息（包含动画数据）
+                const objectInfo: ObjectInfo = {
+                  ...data,
+                  name: data.name || `${data.type}_${data.id.slice(0, 8)}`,
+                  mesh,
+                  animations: data.animations || []
+                };
+                
+                // 添加到场景
+                sceneRef.current!.add(mesh);
+                
+                // 更新物体引用数组
+                objectsRef.current = [...objectsRef.current, mesh];
+                
+                // 更新物体信息数组
+                setObjectsInfo(prev => {
+                  const newObjectsInfo = [...prev, objectInfo];
+                  objectsInfoRef.current = newObjectsInfo;
+                  return newObjectsInfo;
+                });
+                
+                console.log(`恢复物体: ${data.name}, 动画数量: ${data.animations ? data.animations.length : 0}`);
+              });
+            }
+            
+            // 4. 恢复动画状态
+            if (projectData.animations) {
+              if (projectData.animations.currentAnimationSequence) {
+                // 这里可以设置当前动画序列
+                // setCurrentAnimationSequence(projectData.animations.currentAnimationSequence);
+              }
+              
+              // 5. 恢复Blockly工作区（如果有的话）
+              if (projectData.animations.blocklyWorkspace && projectData.animations.blocklyWorkspace.selectedObjectId) {
+                // 找到对应的物体并选中
+                const targetObject = objectsRef.current.find(mesh => {
+                  const info = objectsInfoRef.current.find(inf => inf.mesh === mesh);
+                  return info?.id === projectData.animations.blocklyWorkspace.selectedObjectId;
+                });
+                
+                if (targetObject) {
+                  setTimeout(() => {
+                    selectObject(targetObject);
+                  }, 100);
+                }
+              }
+            }
+            
+            console.log('项目加载完成');
+            alert(`项目加载成功！\n名称: ${projectData.name}\n物体数量: ${projectData.metadata?.totalObjects || 0}`);
+            
+          } catch (error) {
+            console.error('加载项目失败:', error);
+            alert('项目文件格式错误或损坏，请选择有效的项目文件');
+          }
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
+  }, [clearObjects, selectObject]);
 
   // 处理鼠标点击事件选择物体
   const handleObjectClick = useCallback((event: MouseEvent) => {
@@ -1482,6 +1792,19 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         {/* 文件菜单 */}
         <DropdownMenu title="文件" icon="📁" dropdownKey="file" buttonColor="#333">
           <DropdownItem 
+            onClick={saveProject}
+            icon="💾"
+            label="保存项目"
+            description="将整个3D项目打包下载（包含模型、动画、代码）"
+          />
+          <DropdownItem 
+            onClick={loadProject}
+            icon="📂"
+            label="打开项目"
+            description="导入之前保存的项目文件"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
             onClick={handleExportClick}
             icon="📁"
             label="导出GLTF"
@@ -1746,6 +2069,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               {selectedObject ? (
                 <BlocklyAnimationEditor
                   selectedObject={selectedObject}
+                  existingAnimationSteps={currentObjectAnimationSteps}
                   onAnimationStepsChange={(steps) => {
                     // 将 Blockly 生成的步骤转换为原有系统的动画序列
                     const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
