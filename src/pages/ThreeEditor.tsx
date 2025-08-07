@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import BlocklyAnimationEditor from '../components/BlocklyAnimationEditor_New';
 
 type TransformBoxProps = {
   onPosChanged?: (pos: THREE.Vector3) => void;
@@ -81,18 +82,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   
   // 动画相关状态
   const [showAnimationPanel, setShowAnimationPanel] = useState<boolean>(true); // 显示动画面板
-  const [draggedAnimationStep, setDraggedAnimationStep] = useState<AnimationStep | null>(null); // 拖拽的动画步骤
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 拖拽悬停的位置
   const [currentAnimationSequence, setCurrentAnimationSequence] = useState<AnimationSequence | null>(null); // 当前正在播放的动画序列
-  const [selectedAnimationStep, setSelectedAnimationStep] = useState<AnimationStep | null>(null); // 当前选中的动画步骤
   const animationFrameRef = useRef<number | null>(null); // 动画帧请求ID
   const animationStartTimeRef = useRef<number>(0); // 动画开始时间
   const animationInitialState = useRef<{position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3} | null>(null); // 动画初始状态
-  
-  // 动画参数状态 - 用于创建新步骤和编辑选中步骤
-  const [animationDuration, setAnimationDuration] = useState<string>('1.0');
-  const [animationDistance, setAnimationDistance] = useState<string>('1.0'); 
-  const [animationScale, setAnimationScale] = useState<string>('1.2');
   
   // 全场景动画状态
   const [isPlayingSceneAnimation, setIsPlayingSceneAnimation] = useState<boolean>(false);
@@ -101,137 +94,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   
   // 下拉菜单状态
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // 当前打开的下拉菜单
-  
-  // 当选中步骤改变时，更新参数输入框的值
-  useEffect(() => {
-    if (selectedAnimationStep) {
-      setAnimationDuration(selectedAnimationStep.duration.toString());
-      setAnimationDistance((selectedAnimationStep.distance || 1).toString());
-      setAnimationScale((selectedAnimationStep.scale || 1.2).toString());
-    }
-  }, [selectedAnimationStep]);
-  
-  // 当切换动画序列时，清除选中的步骤
-  useEffect(() => {
-    setSelectedAnimationStep(null);
-  }, [currentAnimationSequence]);
-  
-  // 更新选中动画步骤的参数
-  const updateSelectedAnimationStep = useCallback((property: 'duration' | 'distance' | 'scale', value: number) => {
-    if (!selectedAnimationStep || !currentAnimationSequence) return;
-    
-    // 更新步骤属性
-    if (property === 'duration') {
-      selectedAnimationStep.duration = value;
-    } else if (property === 'distance') {
-      selectedAnimationStep.distance = value;
-    } else if (property === 'scale') {
-      selectedAnimationStep.scale = value;
-    }
-    
-    // 触发重新渲染
-    setObjectsInfo([...objectsInfoRef.current]);
-  }, [selectedAnimationStep, currentAnimationSequence]);
-  
-  // 拖拽开始处理
-  const handleDragStart = useCallback((e: React.DragEvent, step: AnimationStep, index: number) => {
-    setDraggedAnimationStep(step);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/html', `步骤 ${index + 1}`);
-    
-    // 添加拖拽样式
-    const target = e.currentTarget as HTMLElement;
-    target.style.opacity = '0.5';
-  }, []);
-  
-  // 拖拽悬停处理
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverIndex(index);
-  }, []);
-  
-  // 拖拽离开处理
-  const handleDragLeave = useCallback(() => {
-    setDragOverIndex(null);
-  }, []);
-  
-  // 拖拽结束处理
-  const handleDragEnd = useCallback((e: React.DragEvent) => {
-    const target = e.currentTarget as HTMLElement;
-    target.style.opacity = '1';
-    setDraggedAnimationStep(null);
-    setDragOverIndex(null);
-  }, []);
-  
-  // 放置处理
-  const handleDrop = useCallback((e: React.DragEvent, targetIndex: number) => {
-    e.preventDefault();
-    
-    if (!draggedAnimationStep || !currentAnimationSequence) return;
-    
-    const steps = currentAnimationSequence.steps;
-    const draggedIndex = steps.findIndex(step => step.id === draggedAnimationStep.id);
-    
-    if (draggedIndex === -1 || draggedIndex === targetIndex) return;
-    
-    // 移动步骤
-    const [draggedStep] = steps.splice(draggedIndex, 1);
-    steps.splice(targetIndex, 0, draggedStep);
-    
-    // 更新状态
-    setObjectsInfo([...objectsInfoRef.current]);
-    setDragOverIndex(null);
-    
-    console.log(`步骤已移动: 从位置 ${draggedIndex + 1} 到位置 ${targetIndex + 1}`);
-  }, [draggedAnimationStep, currentAnimationSequence]);
-  
-  // 添加动画序列到选中物体
-  const addAnimationSequence = useCallback((name: string) => {
-    if (!selectedObject) return;
-    
-    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-    if (!objectInfo) return;
-    
-    const newSequence: AnimationSequence = {
-      id: `seq_${Date.now()}`,
-      name,
-      steps: [],
-      isPlaying: false,
-      currentStepIndex: 0
-    };
-    
-    if (!objectInfo.animations) {
-      objectInfo.animations = [];
-    }
-    objectInfo.animations.push(newSequence);
-    
-    setObjectsInfo([...objectsInfoRef.current]);
-    console.log(`已添加动画序列: ${name}`);
-  }, [selectedObject]);
-  
-  // 添加动画步骤到当前选中的序列
-  const addAnimationStep = useCallback((type: AnimationType, duration: number = 1, value: number = 1) => {
-    if (!selectedObject || !currentAnimationSequence) return;
-    
-    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-    if (!objectInfo || !objectInfo.animations) return;
-    
-    const sequence = objectInfo.animations.find(seq => seq.id === currentAnimationSequence.id);
-    if (!sequence) return;
-    
-    const newStep: AnimationStep = {
-      id: `step_${Date.now()}`,
-      type,
-      duration,
-      distance: (type.startsWith('move') || type.startsWith('rotate')) ? value : undefined,
-      scale: (type === 'scaleUp' || type === 'scaleDown') ? value : undefined
-    };
-    
-    sequence.steps.push(newStep);
-    setObjectsInfo([...objectsInfoRef.current]);
-    console.log(`已添加动画步骤: ${type}, 时长: ${duration}秒, 参数: ${value}`);
-  }, [selectedObject, currentAnimationSequence]);
   
   // 播放动画序列
   const playAnimationSequence = useCallback((sequence: AnimationSequence) => {
@@ -1834,7 +1696,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         {/* 左侧动画面板 */}
         {showAnimationPanel && (
           <div style={{
-            width: '300px',
+            width: '400px',
             backgroundColor: '#fafafa',
             borderRight: '1px solid #d9d9d9',
             display: 'flex',
@@ -1857,7 +1719,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                 fontWeight: 'bold', 
                 color: '#e65100' 
               }}>
-                🎬 动画编辑器
+                Blockly 动画编辑器
               </h3>
               <button
                 onClick={() => setShowAnimationPanel(false)}
@@ -1871,7 +1733,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                 }}
                 title="关闭动画面板"
               >
-                ✕
+                ×
               </button>
             </div>
 
@@ -1879,680 +1741,53 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             <div style={{
               flex: 1,
               overflowY: 'auto',
-              padding: '16px'
+              padding: '0'
             }}>
               {selectedObject ? (
-                <div>
-                  <div style={{ marginBottom: '20px' }}>
-                    <h4 style={{ 
-                      margin: '0 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      ▶️ 动画序列
-                    </h4>
-                    
-                    {/* 动画序列列表 */}
-                    <div style={{ 
-                      backgroundColor: '#fff', 
-                      border: '1px solid #ffe0b2', 
-                      borderRadius: '4px',
-                      padding: '8px',
-                      marginBottom: '16px'
-                    }}>
-                      {(() => {
-                        const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
-                        const animations = objectInfo?.animations || [];
-                        
-                        return animations.length > 0 ? (
-                          <div>
-                            {animations.map((seq) => (
-                              <div
-                                key={seq.id}
-                                style={{
-                                  padding: '8px',
-                                  marginBottom: '8px',
-                                  backgroundColor: currentAnimationSequence?.id === seq.id ? '#fff3e0' : '#f9f9f9',
-                                  border: `1px solid ${currentAnimationSequence?.id === seq.id ? '#ffcc80' : '#e0e0e0'}`,
-                                  borderRadius: '4px',
-                                  cursor: 'pointer'
-                                }}
-                                onClick={() => setCurrentAnimationSequence(seq)}
-                              >
-                                <div style={{ 
-                                  display: 'flex', 
-                                  justifyContent: 'space-between', 
-                                  alignItems: 'center',
-                                  marginBottom: '4px'
-                                }}>
-                                  <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#e65100' }}>
-                                    {seq.name}
-                                  </span>
-                                  <span style={{ 
-                                    fontSize: '10px', 
-                                    color: '#999',
-                                    backgroundColor: '#fff',
-                                    padding: '2px 6px',
-                                    borderRadius: '8px'
-                                  }}>
-                                    {seq.steps.length} 步骤
-                                  </span>
-                                </div>
-                                {seq.isPlaying && (
-                                  <div style={{ 
-                                    fontSize: '10px', 
-                                    color: '#4caf50',
-                                    fontWeight: 'bold'
-                                  }}>
-                                    ▶️ 播放中... ({seq.currentStepIndex + 1}/{seq.steps.length})
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p style={{ 
-                            margin: '0 0 8px 0', 
-                            fontSize: '12px', 
-                            color: '#999',
-                            textAlign: 'center' 
-                          }}>
-                            还没有创建动画序列
-                          </p>
-                        );
-                      })()}
+                <BlocklyAnimationEditor
+                  selectedObject={selectedObject}
+                  onAnimationStepsChange={(steps) => {
+                    // 将 Blockly 生成的步骤转换为原有系统的动画序列
+                    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                    if (objectInfo) {
+                      if (!objectInfo.animations) {
+                        objectInfo.animations = [];
+                      }
                       
-                      <button
-                        onClick={() => {
-                          const name = prompt('请输入动画序列名称:', `动画序列 ${(objectsInfo.find(info => info.mesh === selectedObject)?.animations?.length || 0) + 1}`);
-                          if (name) {
-                            addAnimationSequence(name);
-                          }
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '8px 12px',
-                          backgroundColor: '#ff9800',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        ➕ 添加动画序列
-                      </button>
-                    </div>
-                    
-                    {/* 动画步骤部分 */}
-                    <h4 style={{ 
-                      margin: '24px 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      🔢 动画步骤
-                    </h4>
-                    
-                    <div style={{ 
-                      backgroundColor: '#fff', 
-                      border: '1px solid #ffe0b2', 
-                      borderRadius: '4px',
-                      padding: '12px',
-                      marginBottom: '16px'
-                    }}>
-                      {currentAnimationSequence ? (
-                        <div>
-                          <div style={{ 
-                            padding: '8px 12px', 
-                            backgroundColor: '#fff3e0',
-                            borderRadius: '4px',
-                            marginBottom: '16px',
-                            fontSize: '12px',
-                            color: '#e65100',
-                            border: '1px solid #ffcc80'
-                          }}>
-                            当前编辑: <strong>{currentAnimationSequence.name}</strong>
-                          </div>
-                          
-                          {/* 操作提示 */}
-                          {currentAnimationSequence.steps.length > 1 && (
-                            <div style={{ 
-                              padding: '6px 8px', 
-                              backgroundColor: '#e8f5e8',
-                              borderRadius: '4px',
-                              marginBottom: '12px',
-                              fontSize: '10px',
-                              color: '#4caf50',
-                              border: '1px solid #c8e6c9',
-                              textAlign: 'center'
-                            }}>
-                              💡 提示: 拖拽 ⋮⋮ 图标可调整步骤顺序，点击步骤可编辑参数
-                            </div>
-                          )}
-                          
-                          {/* 动画步骤列表 */}
-                          <div style={{ 
-                            minHeight: '100px', 
-                            backgroundColor: '#fafafa',
-                            border: '1px dashed #ffcc80',
-                            borderRadius: '4px',
-                            padding: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '8px',
-                            marginBottom: '12px'
-                          }}>
-                            {currentAnimationSequence.steps.length > 0 ? (
-                              currentAnimationSequence.steps.map((step, index) => (
-                                <div
-                                  key={step.id}
-                                  draggable
-                                  onDragStart={(e) => handleDragStart(e, step, index)}
-                                  onDragOver={(e) => handleDragOver(e, index)}
-                                  onDragLeave={handleDragLeave}
-                                  onDragEnd={handleDragEnd}
-                                  onDrop={(e) => handleDrop(e, index)}
-                                  style={{
-                                    padding: '8px',
-                                    backgroundColor: 
-                                      dragOverIndex === index ? '#e8f5e8' :
-                                      selectedAnimationStep?.id === step.id ? '#fff3e0' : '#fff',
-                                    border: 
-                                      dragOverIndex === index ? '2px dashed #4caf50' :
-                                      selectedAnimationStep?.id === step.id ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '4px',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    cursor: draggedAnimationStep ? 'grabbing' : 'grab',
-                                    transition: 'all 0.2s ease',
-                                    position: 'relative'
-                                  }}
-                                  onClick={() => setSelectedAnimationStep(step)}
-                                  title="拖拽移动顺序，点击选中编辑"
-                                >
-                                  {/* 拖拽手柄 */}
-                                  <div style={{
-                                    position: 'absolute',
-                                    left: '4px',
-                                    top: '50%',
-                                    transform: 'translateY(-50%)',
-                                    fontSize: '12px',
-                                    color: '#999',
-                                    cursor: 'grab'
-                                  }}>
-                                    ⋮⋮
-                                  </div>
-                                  
-                                  <div style={{ marginLeft: '20px', flex: 1 }}>
-                                    <span style={{ fontWeight: 'bold', color: '#e65100' }}>
-                                      {index + 1}. {(() => {
-                                        const typeNames: Record<AnimationType, string> = {
-                                          moveUp: '上移', moveDown: '下移', moveLeft: '左移', moveRight: '右移',
-                                          moveForward: '前移', moveBackward: '后移',
-                                          rotateX: 'X轴旋转', rotateY: 'Y轴旋转', rotateZ: 'Z轴旋转',
-                                          scaleUp: '放大', scaleDown: '缩小', pause: '暂停'
-                                        };
-                                        return typeNames[step.type] || step.type;
-                                      })()}
-                                    </span>
-                                    <div style={{ color: '#666', fontSize: '10px' }}>
-                                      时长: {step.duration}秒
-                                      {step.distance && `, 距离: ${step.distance}`}
-                                      {step.scale && `, 比例: ${step.scale}`}
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation(); // 防止触发步骤选择
-                                      // 如果删除的是选中步骤，清除选中状态
-                                      if (selectedAnimationStep?.id === step.id) {
-                                        setSelectedAnimationStep(null);
-                                      }
-                                      // 删除步骤
-                                      currentAnimationSequence.steps.splice(index, 1);
-                                      setObjectsInfo([...objectsInfoRef.current]);
-                                    }}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: '#f44336',
-                                      cursor: 'pointer',
-                                      fontSize: '12px',
-                                      padding: '2px'
-                                    }}
-                                    title="删除此步骤"
-                                  >
-                                    🗑️
-                                  </button>
-                                </div>
-                              ))
-                            ) : (
-                              <p style={{ 
-                                margin: '0', 
-                                fontSize: '12px', 
-                                color: '#999',
-                                textAlign: 'center',
-                                padding: '32px 0' 
-                              }}>
-                                还没有添加动画步骤
-                              </p>
-                            )}
-                          </div>
-                          
-                          {/* 动画参数设置 */}
-                          <div style={{ marginBottom: '16px' }}>
-                            <div style={{ 
-                              fontSize: '11px', 
-                              color: '#e65100', 
-                              marginBottom: '8px',
-                              fontWeight: 'bold'
-                            }}>
-                              ⚙️ 动画参数: {selectedAnimationStep ? `(编辑步骤 ${currentAnimationSequence!.steps.indexOf(selectedAnimationStep) + 1})` : '(新建步骤)'}
-                              {selectedAnimationStep && (
-                                <button
-                                  onClick={() => setSelectedAnimationStep(null)}
-                                  style={{
-                                    marginLeft: '8px',
-                                    padding: '2px 6px',
-                                    backgroundColor: '#f44336',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '3px',
-                                    cursor: 'pointer',
-                                    fontSize: '9px',
-                                    fontWeight: 'bold'
-                                  }}
-                                  title="取消编辑，切换到新建模式"
-                                >
-                                  取消编辑
-                                </button>
-                              )}
-                            </div>
-                            
-                            <div style={{ 
-                              display: 'grid', 
-                              gridTemplateColumns: '1fr 1fr 1fr', 
-                              gap: '8px',
-                              marginBottom: '12px'
-                            }}>
-                              {/* 时长输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  时长(秒)
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="10"
-                                  step="0.1"
-                                  value={animationDuration}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationDuration(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('duration', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑时长' : '新建时长'}
-                                />
-                              </div>
-                              
-                              {/* 距离/角度输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  距离/角度
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="10"
-                                  step="0.1"
-                                  value={animationDistance}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationDistance(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('distance', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑距离' : '新建距离'}
-                                />
-                              </div>
-                              
-                              {/* 缩放倍数输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  缩放倍数
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="5"
-                                  step="0.1"
-                                  value={animationScale}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationScale(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('scale', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑缩放' : '新建缩放'}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                          
-                          {/* 快速添加步骤按钮组 */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ 
-                              fontSize: '11px', 
-                              color: '#e65100', 
-                              marginBottom: '8px',
-                              fontWeight: 'bold'
-                            }}>
-                              快速添加步骤:
-                            </div>
-                            <div style={{ 
-                              display: 'grid', 
-                              gridTemplateColumns: 'repeat(4, 1fr)', 
-                              gap: '4px',
-                              marginBottom: '8px'
-                            }}>
-                              {[
-                                { type: 'moveUp' as AnimationType, label: '⬆️', title: '向上移动', category: 'move' },
-                                { type: 'moveDown' as AnimationType, label: '⬇️', title: '向下移动', category: 'move' },
-                                { type: 'moveLeft' as AnimationType, label: '⬅️', title: '向左移动', category: 'move' },
-                                { type: 'moveRight' as AnimationType, label: '➡️', title: '向右移动', category: 'move' },
-                                { type: 'moveForward' as AnimationType, label: '↗️', title: '向前移动', category: 'move' },
-                                { type: 'moveBackward' as AnimationType, label: '↙️', title: '向后移动', category: 'move' },
-                                { type: 'rotateX' as AnimationType, label: '🔄X', title: 'X轴旋转', category: 'rotate' },
-                                { type: 'rotateY' as AnimationType, label: '🔄Y', title: 'Y轴旋转', category: 'rotate' },
-                                { type: 'rotateZ' as AnimationType, label: '🔄Z', title: 'Z轴旋转', category: 'rotate' },
-                                { type: 'scaleUp' as AnimationType, label: '🔍+', title: '放大', category: 'scale' },
-                                { type: 'scaleDown' as AnimationType, label: '🔍-', title: '缩小', category: 'scale' },
-                                { type: 'pause' as AnimationType, label: '⏸️', title: '暂停', category: 'control' }
-                              ].map(({ type, label, title, category }) => (
-                                <button
-                                  key={type}
-                                  onClick={() => {
-                                    const duration = parseFloat(animationDuration) || 1;
-                                    const distance = parseFloat(animationDistance) || 1;
-                                    const scale = parseFloat(animationScale) || 1.5;
-                                    
-                                    if (type === 'scaleUp' || type === 'scaleDown') {
-                                      addAnimationStep(type, duration, scale);
-                                    } else if (type === 'pause') {
-                                      addAnimationStep(type, duration, 0);
-                                    } else {
-                                      addAnimationStep(type, duration, distance);
-                                    }
-                                  }}
-                                  style={{
-                                    padding: '6px 4px',
-                                    backgroundColor: 
-                                      category === 'move' ? '#4caf50' :
-                                      category === 'rotate' ? '#2196f3' :
-                                      category === 'scale' ? '#ff9800' : '#9e9e9e',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer',
-                                    fontSize: '10px',
-                                    fontWeight: 'bold'
-                                  }}
-                                  title={title}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                            
-                            {/* 颜色说明 */}
-                            <div style={{ 
-                              fontSize: '9px', 
-                              color: '#999',
-                              textAlign: 'center',
-                              marginTop: '4px'
-                            }}>
-                              <span style={{color: '#4caf50'}}>●</span> 移动 
-                              <span style={{color: '#2196f3', marginLeft: '8px'}}>●</span> 旋转 
-                              <span style={{color: '#ff9800', marginLeft: '8px'}}>●</span> 缩放 
-                              <span style={{color: '#9e9e9e', marginLeft: '8px'}}>●</span> 控制
-                            </div>
-                            
-                            {/* 自定义步骤创建 */}
-                            <div style={{
-                              marginTop: '16px',
-                              padding: '12px',
-                              backgroundColor: '#f9f9f9',
-                              border: '1px solid #e0e0e0',
-                              borderRadius: '4px'
-                            }}>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: '#e65100', 
-                                marginBottom: '8px',
-                                fontWeight: 'bold'
-                              }}>
-                                🛠️ 自定义步骤:
-                              </div>
-                              
-                              <div style={{ marginBottom: '8px' }}>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  动画类型
-                                </label>
-                                <select
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box'
-                                  }}
-                                  onChange={(e) => {
-                                    const selectedType = e.target.value;
-                                    const duration = parseFloat(animationDuration) || 1;
-                                    const distance = parseFloat(animationDistance) || 1;
-                                    const scale = parseFloat(animationScale) || 1.5;
-                                    
-                                    if (selectedType && selectedType !== '') {
-                                      const animType = selectedType as AnimationType;
-                                      if (animType === 'scaleUp' || animType === 'scaleDown') {
-                                        addAnimationStep(animType, duration, scale);
-                                      } else if (animType === 'pause') {
-                                        addAnimationStep(animType, duration, 0);
-                                      } else {
-                                        addAnimationStep(animType, duration, distance);
-                                      }
-                                      e.target.value = ''; // 重置选择
-                                    }
-                                  }}
-                                  defaultValue=""
-                                >
-                                  <option value="">选择动画类型...</option>
-                                  <optgroup label="移动动画">
-                                    <option value="moveUp">向上移动</option>
-                                    <option value="moveDown">向下移动</option>
-                                    <option value="moveLeft">向左移动</option>
-                                    <option value="moveRight">向右移动</option>
-                                    <option value="moveForward">向前移动</option>
-                                    <option value="moveBackward">向后移动</option>
-                                  </optgroup>
-                                  <optgroup label="旋转动画">
-                                    <option value="rotateX">X轴旋转</option>
-                                    <option value="rotateY">Y轴旋转</option>
-                                    <option value="rotateZ">Z轴旋转</option>
-                                  </optgroup>
-                                  <optgroup label="缩放动画">
-                                    <option value="scaleUp">放大</option>
-                                    <option value="scaleDown">缩小</option>
-                                  </optgroup>
-                                  <optgroup label="控制">
-                                    <option value="pause">暂停</option>
-                                  </optgroup>
-                                </select>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ 
-                          padding: '12px', 
-                          backgroundColor: '#fff8e1',
-                          borderRadius: '4px',
-                          marginBottom: '16px',
-                          fontSize: '12px',
-                          color: '#e65100',
-                          textAlign: 'center'
-                        }}>
-                          请先选择或创建一个动画序列
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* 动画预览与播放控制 */}
-                    <h4 style={{ 
-                      margin: '24px 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      ▶️ 动画预览
-                    </h4>
-                    
-                    <div style={{ 
-                      display: 'flex', 
-                      gap: '8px',
-                      marginBottom: '16px' 
-                    }}>
-                      <button
-                        onClick={() => {
-                          if (currentAnimationSequence) {
-                            playAnimationSequence(currentAnimationSequence);
-                          } else {
-                            alert('请先选择一个动画序列');
-                          }
-                        }}
-                        disabled={!currentAnimationSequence || currentAnimationSequence.steps.length === 0}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: (!currentAnimationSequence || currentAnimationSequence.steps.length === 0) ? '#ccc' : '#4caf50',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: (!currentAnimationSequence || currentAnimationSequence.steps.length === 0) ? 'not-allowed' : 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        ▶️ 播放
-                      </button>
+                      // 更新或创建默认动画序列
+                      let defaultSequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                      if (!defaultSequence) {
+                        defaultSequence = {
+                          id: `blockly_seq_${Date.now()}`,
+                          name: 'Blockly动画',
+                          steps: [],
+                          isPlaying: false,
+                          currentStepIndex: 0
+                        };
+                        objectInfo.animations.push(defaultSequence);
+                      }
                       
-                      <button
-                        onClick={stopAnimation}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: '#f44336',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        ⏹️ 停止
-                      </button>
-                      
-                      <button
-                        onClick={resetAnimation}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: '#2196f3',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        🔄 重置
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                      // 更新步骤
+                      defaultSequence.steps = steps;
+                      setCurrentAnimationSequence(defaultSequence);
+                      setObjectsInfo([...objectsInfoRef.current]);
+                    }
+                  }}
+                  onPlayAnimation={(steps) => {
+                    // 使用现有的播放动画逻辑
+                    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                    if (objectInfo && objectInfo.animations) {
+                      let sequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                      if (sequence) {
+                        sequence.steps = steps;
+                        playAnimationSequence(sequence);
+                      }
+                    }
+                  }}
+                  onStopAnimation={stopAnimation}
+                  onResetAnimation={resetAnimation}
+                  visible={true}
+                />
               ) : (
                 <div style={{ 
                   display: 'flex', 
@@ -2564,7 +1799,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                   color: '#999',
                   fontSize: '14px'
                 }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎬</div>
                   <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
                   <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
                     请先在场景中选择一个物体来创建动画
