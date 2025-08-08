@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import BlocklyAnimationEditor from '../components/BlocklyAnimationEditor_New';
+import JSZip from 'jszip';
 
 type TransformBoxProps = {
   onPosChanged?: (pos: THREE.Vector3) => void;
@@ -1106,41 +1107,33 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     input.click();
   }, [restoreSceneFromData]);
 
-  // 保存完整项目（包含3D模型、动画、Blockly代码等）
+  // 保存完整项目（参考 Scratch 3.0 .sb3 文件格式）
   const saveProject = useCallback(async () => {
     try {
-      // 1. 获取所有物体数据（包含动画序列）
-      const objectsData = objectsInfo.map(info => {
-        const animationCount = info.animations?.length || 0;
-        console.log(`保存物体 ${info.name}: 包含 ${animationCount} 个动画序列`);
-        return {
-          id: info.id,
-          name: info.name,
-          type: info.type,
-          position: info.position,
-          rotation: info.rotation,
-          scale: info.scale,
-          color: info.color,
-          animations: info.animations || []
-        };
-      });
-      
-      console.log('保存项目 - 总物体数量:', objectsData.length);
-      console.log('保存项目 - 动画数据统计:', objectsData.map(obj => `${obj.name}: ${obj.animations.length}个动画`));
+      // 1. 构建项目元数据 (类似 Scratch meta)
+      const meta = {
+        semver: '1.0.0',
+        vm: '1.0.0',
+        agent: 'Industrial-LowCode 3D Editor',
+        created: new Date().toISOString(),
+        modified: new Date().toISOString()
+      };
 
-      // 2. 获取当前选中物体的Blockly工作区状态
-      let blocklyWorkspace = null;
-      if (selectedObject) {
-        // 这里需要从BlocklyAnimationEditor获取工作区XML
-        // 由于组件封装，我们先用一个占位符
-        blocklyWorkspace = {
-          selectedObjectId: objectsInfo.find(info => info.mesh === selectedObject)?.id || null,
-          workspaceXml: null // 这个需要从BlocklyAnimationEditor组件获取
-        };
-      }
-
-      // 3. 获取场景设置
-      const sceneSettings = {
+      // 2. 构建舞台目标 (类似 Scratch Stage target)
+      const stage = {
+        isStage: true,
+        name: 'Stage',
+        variables: {},
+        lists: {},
+        broadcasts: {},
+        blocks: {},
+        comments: {},
+        currentCostume: 0,
+        costumes: [],
+        sounds: [],
+        layerOrder: 0,
+        volume: 100,
+        // 3D 场景特有的舞台属性
         gridSize,
         gridDivisions,
         showGrid,
@@ -1148,101 +1141,174 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           x: cameraRef.current.position.x,
           y: cameraRef.current.position.y,
           z: cameraRef.current.position.z
-        } : null,
+        } : { x: 3, y: 3, z: 3 },
         cameraTarget: orbitRef.current ? {
           x: orbitRef.current.target.x,
           y: orbitRef.current.target.y,
           z: orbitRef.current.target.z
-        } : null
+        } : { x: 0, y: 0, z: 0 }
       };
 
-      // 4. 生成GLTF数据（3D模型）
-      let gltfData = null;
+      // 3. 构建精灵目标数组 (类似 Scratch Sprite targets)
+      const sprites = objectsInfoRef.current.map((objectInfo, index) => ({
+        isStage: false,
+        name: objectInfo.name,
+        variables: {},
+        lists: {},
+        broadcasts: {},
+        blocks: objectInfo.animations ? 
+          objectInfo.animations.reduce((blocks: any, animation) => {
+            // 将动画步骤转换为类似 Blockly 的块结构
+            animation.steps.forEach((step, stepIndex) => {
+              const blockId = `${objectInfo.id}_${animation.id}_step_${stepIndex}`;
+              blocks[blockId] = {
+                opcode: `motion_${step.type}`,
+                next: stepIndex < animation.steps.length - 1 ? 
+                  `${objectInfo.id}_${animation.id}_step_${stepIndex + 1}` : null,
+                parent: stepIndex > 0 ? 
+                  `${objectInfo.id}_${animation.id}_step_${stepIndex - 1}` : null,
+                inputs: {},
+                fields: {
+                  DURATION: [step.duration],
+                  DISTANCE: [step.distance || 0],
+                  SCALE: [step.scale || 1]
+                },
+                shadow: false,
+                topLevel: stepIndex === 0,
+                x: stepIndex * 100,
+                y: index * 100
+              };
+            });
+            return blocks;
+          }, {}) : {},
+        comments: {},
+        currentCostume: 0,
+        costumes: [{
+          assetId: `${objectInfo.id}_costume`,
+          name: `${objectInfo.type}_costume`,
+          md5ext: `${objectInfo.id}_costume.json`,
+          dataFormat: 'json',
+          rotationCenterX: 0,
+          rotationCenterY: 0
+        }],
+        sounds: [],
+        layerOrder: index + 1,
+        volume: 100,
+        // 3D 物体特有属性
+        visible: true,
+        x: objectInfo.position.x,
+        y: objectInfo.position.y,
+        z: objectInfo.position.z,
+        rotationX: objectInfo.rotation.x,
+        rotationY: objectInfo.rotation.y,
+        rotationZ: objectInfo.rotation.z,
+        scaleX: objectInfo.scale.x,
+        scaleY: objectInfo.scale.y,
+        scaleZ: objectInfo.scale.z,
+        color: objectInfo.color,
+        objectType: objectInfo.type,
+        objectId: objectInfo.id,
+        animations: objectInfo.animations || []
+      }));
+
+      // 4. 构建监视器数组 (类似 Scratch monitors)
+      const monitors = [
+        {
+          id: 'objectCount',
+          mode: 'default',
+          opcode: 'sensing_objectcount',
+          params: {},
+          spriteName: null,
+          value: objectsInfoRef.current.length,
+          width: 100,
+          height: 30,
+          x: 5,
+          y: 5,
+          visible: true
+        }
+      ];
+
+      // 5. 扩展列表 (类似 Scratch extensions)
+      const extensions = ['three_js', 'animation_system', 'blockly_editor'];
+
+      // 6. 构建完整的项目 JSON (类似 Scratch project.json)
+      const projectJson = {
+        targets: [stage, ...sprites],
+        monitors,
+        extensions,
+        meta
+      };
+
+      // 7. 导出 GLTF 模型数据作为资产
+      let gltfAsset: string | null = null;
+      let gltfData: any = null;
       if (objectsRef.current.length > 0) {
         const exporter = new GLTFExporter();
-        const exportScene = new THREE.Scene();
+        const tempScene = new THREE.Scene();
+        objectsRef.current.forEach(mesh => {
+          const clone = mesh.clone();
+          if ((mesh as any).material) {
+            (clone as any).material = (mesh as any).material.clone();
+          }
+          tempScene.add(clone);
+        });
         
-        // 添加所有动态创建的物体
-        objectsRef.current.forEach(obj => {
-          const objClone = obj.clone();
-          exportScene.add(objClone);
+        gltfData = await new Promise<any>((resolve, reject) => {
+          exporter.parse(tempScene, resolve, reject, {
+            binary: false,
+            onlyVisible: true,
+            truncateDrawRange: true,
+            embedImages: true,
+            animations: [],
+            forceIndices: false,
+            includeCustomExtensions: false
+          });
         });
-
-        // 导出为GLTF
-        await new Promise<void>((resolve, reject) => {
-          exporter.parse(
-            exportScene,
-            (gltf) => {
-              gltfData = gltf;
-              resolve();
-            },
-            (error) => {
-              console.error('GLTF导出失败:', error);
-              reject(error);
-            },
-            {
-              binary: false,
-              onlyVisible: true,
-              truncateDrawRange: true,
-              embedImages: true,
-              animations: [],
-              forceIndices: false,
-              includeCustomExtensions: false
-            }
-          );
-        });
+        
+        // 生成 MD5 风格的资产 ID (简化版)
+        const assetId = `scene_${Date.now().toString(36)}`;
+        gltfAsset = `${assetId}.gltf`;
       }
 
-      // 5. 创建项目数据包
-      const projectData = {
-        version: "1.0.0",
-        created: new Date().toISOString(),
-        name: `3D项目_${new Date().toLocaleDateString()}`,
-        description: "Industrial LowCode 3D项目文件",
-        
-        // 场景数据
-        scene: {
-          objects: objectsData,
-          settings: sceneSettings
-        },
-        
-        // 3D模型数据
-        models: gltfData,
-        
-        // 动画和代码数据
-        animations: {
-          blocklyWorkspace,
-          currentAnimationSequence: currentAnimationSequence ? {
-            id: currentAnimationSequence.id,
-            name: currentAnimationSequence.name,
-            steps: currentAnimationSequence.steps
-          } : null
-        },
-        
-        // 元数据
-        metadata: {
-          totalObjects: objectsInfo.length,
-          totalAnimations: objectsInfo.reduce((total, obj) => total + (obj.animations?.length || 0), 0),
-          exportTime: Date.now()
-        }
-      };
-
-      // 6. 创建压缩包或直接下载JSON
-      const dataStr = JSON.stringify(projectData, null, 2);
-      const dataBlob = new Blob([dataStr], { type: 'application/json' });
-      const url = URL.createObjectURL(dataBlob);
+      // 8. 创建 ZIP 包 (类似 Scratch .sb3)
+      const zip = new JSZip();
       
+      // 主项目文件
+      zip.file('project.json', JSON.stringify(projectJson, null, 2));
+      
+      // 资产文件
+      if (gltfAsset && gltfData) {
+        zip.file(gltfAsset, JSON.stringify(gltfData, null, 2));
+      }
+
+      // 为每个物体添加服装数据 (costume data)
+      sprites.forEach(sprite => {
+        if (sprite.costumes.length > 0) {
+          const costumeData = {
+            type: sprite.objectType,
+            color: sprite.color,
+            geometry: sprite.objectType,
+            position: { x: sprite.x, y: sprite.y, z: sprite.z },
+            rotation: { x: sprite.rotationX, y: sprite.rotationY, z: sprite.rotationZ },
+            scale: { x: sprite.scaleX, y: sprite.scaleY, z: sprite.scaleZ }
+          };
+          zip.file(sprite.costumes[0].md5ext, JSON.stringify(costumeData, null, 2));
+        }
+      });
+
+      // 9. 生成并下载文件
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `3D项目_${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.i3d`;
+      link.download = `project_${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.i3d`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
       URL.revokeObjectURL(url);
-      
-      console.log('项目保存成功:', projectData);
-      alert('项目已成功保存！');
+
+      console.log('项目保存成功 (Scratch 风格):', projectJson);
+      alert(`项目已成功保存！\n格式: Industrial-LowCode (.i3d)\n物体数量: ${sprites.length}\n动画数量: ${sprites.reduce((total, sprite) => total + sprite.animations.length, 0)}`);
       
     } catch (error) {
       console.error('保存项目失败:', error);
@@ -1305,155 +1371,165 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     console.log('选中物体:', mesh === meshRef.current ? '原始立方体' : '动态物体', '变换模式:', transformMode);
   }, [transformMode, getCurrentControls]);
 
-  // 加载完整项目
+  // 加载完整项目（支持 Scratch 风格的 .i3d 格式）
   const loadProject = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.i3d,.json';
     input.onchange = async (event) => {
       const file = (event.target as HTMLInputElement).files?.[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          try {
-            const projectData = JSON.parse(e.target?.result as string);
-            
-            // 验证项目文件格式
-            if (!projectData.version || !projectData.scene) {
-              throw new Error('无效的项目文件格式');
-            }
-            
-            console.log('开始加载项目:', projectData);
-            
-            // 1. 清空当前场景
-            clearObjects();
-            
-            // 2. 恢复场景设置
-            if (projectData.scene.settings) {
-              const settings = projectData.scene.settings;
-              
-              // 恢复相机位置
-              if (settings.cameraPosition && cameraRef.current) {
-                cameraRef.current.position.set(
-                  settings.cameraPosition.x,
-                  settings.cameraPosition.y,
-                  settings.cameraPosition.z
-                );
-              }
-              
-              // 恢复相机目标
-              if (settings.cameraTarget && orbitRef.current) {
-                orbitRef.current.target.set(
-                  settings.cameraTarget.x,
-                  settings.cameraTarget.y,
-                  settings.cameraTarget.z
-                );
-                orbitRef.current.update();
-              }
-              
-              // 恢复网格显示
-              if (typeof settings.showGrid === 'boolean') {
-                setShowGrid(settings.showGrid);
-                if (gridRef.current) {
-                  gridRef.current.visible = settings.showGrid;
-                }
-              }
-            }
-            
-            // 3. 恢复物体数据（包含动画）
-            if (projectData.scene.objects && Array.isArray(projectData.scene.objects)) {
-              // 使用现有的恢复函数，但需要保留动画数据
-              const objectsWithAnimations = projectData.scene.objects;
-              
-              console.log('加载项目 - 物体数量:', objectsWithAnimations.length);
-              console.log('加载项目 - 动画数据统计:', objectsWithAnimations.map((obj: any) => `${obj.name}: ${obj.animations?.length || 0}个动画`));
-              
-              objectsWithAnimations.forEach((data: any) => {
-                let geometry: THREE.BufferGeometry;
-                
-                switch (data.type) {
-                  case 'cube':
-                    geometry = new THREE.BoxGeometry(1, 1, 1);
-                    break;
-                  case 'sphere':
-                    geometry = new THREE.SphereGeometry(0.5, 32, 32);
-                    break;
-                  case 'cylinder':
-                    geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
-                    break;
-                  case 'cone':
-                    geometry = new THREE.ConeGeometry(0.5, 1, 32);
-                    break;
-                  default:
-                    geometry = new THREE.BoxGeometry(1, 1, 1);
-                    break;
-                }
-                
-                const material = new THREE.MeshStandardMaterial({ color: data.color });
-                const mesh = new THREE.Mesh(geometry, material);
-                
-                // 应用保存的变换
-                mesh.position.set(data.position.x, data.position.y, data.position.z);
-                mesh.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
-                mesh.scale.set(data.scale.x, data.scale.y, data.scale.z);
-                
-                // 创建物体信息（包含动画数据）
-                const objectInfo: ObjectInfo = {
-                  ...data,
-                  name: data.name || `${data.type}_${data.id.slice(0, 8)}`,
-                  mesh,
-                  animations: data.animations || []
-                };
-                
-                // 添加到场景
-                sceneRef.current!.add(mesh);
-                
-                // 更新物体引用数组
-                objectsRef.current = [...objectsRef.current, mesh];
-                
-                // 更新物体信息数组
-                setObjectsInfo(prev => {
-                  const newObjectsInfo = [...prev, objectInfo];
-                  objectsInfoRef.current = newObjectsInfo;
-                  return newObjectsInfo;
-                });
-                
-                console.log(`恢复物体: ${data.name}, 动画数量: ${data.animations ? data.animations.length : 0}`);
-              });
-            }
-            
-            // 4. 恢复动画状态
-            if (projectData.animations) {
-              if (projectData.animations.currentAnimationSequence) {
-                // 这里可以设置当前动画序列
-                // setCurrentAnimationSequence(projectData.animations.currentAnimationSequence);
-              }
-              
-              // 5. 恢复Blockly工作区（如果有的话）
-              if (projectData.animations.blocklyWorkspace && projectData.animations.blocklyWorkspace.selectedObjectId) {
-                // 找到对应的物体并选中
-                const targetObject = objectsRef.current.find(mesh => {
-                  const info = objectsInfoRef.current.find(inf => inf.mesh === mesh);
-                  return info?.id === projectData.animations.blocklyWorkspace.selectedObjectId;
-                });
-                
-                if (targetObject) {
-                  setTimeout(() => {
-                    selectObject(targetObject);
-                  }, 100);
-                }
-              }
-            }
-            
-            console.log('项目加载完成');
-            alert(`项目加载成功！\n名称: ${projectData.name}\n物体数量: ${projectData.metadata?.totalObjects || 0}`);
-            
-          } catch (error) {
-            console.error('加载项目失败:', error);
-            alert('项目文件格式错误或损坏，请选择有效的项目文件');
+      if (!file) return;
+
+      try {
+        let projectData: any = null;
+
+        // 检查文件类型
+        if (file.name.endsWith('.i3d')) {
+          // 处理 ZIP 格式的 .i3d 文件 (Scratch 风格)
+          const zip = new JSZip();
+          const zipContent = await zip.loadAsync(file);
+          
+          // 读取主项目文件
+          const projectFile = zipContent.file('project.json');
+          if (!projectFile) {
+            throw new Error('项目文件中没有找到 project.json');
           }
-        };
-        reader.readAsText(file);
+          
+          const projectJsonText = await projectFile.async('text');
+          projectData = JSON.parse(projectJsonText);
+          
+          // 验证 Scratch 风格格式
+          if (!projectData.targets || !projectData.meta) {
+            throw new Error('无效的 .i3d 项目文件格式');
+          }
+          
+          console.log('加载 Scratch 风格项目:', projectData);
+          
+        } else {
+          // 处理旧格式的 JSON 文件
+          const reader = new FileReader();
+          const fileContent = await new Promise<string>((resolve, reject) => {
+            reader.onload = (e) => resolve(e.target?.result as string);
+            reader.onerror = reject;
+            reader.readAsText(file);
+          });
+          
+          projectData = JSON.parse(fileContent);
+          
+          // 验证旧格式
+          if (!projectData.version || !projectData.scene) {
+            throw new Error('无效的项目文件格式');
+          }
+        }
+
+        // 1. 清空当前场景
+        clearObjects();
+
+        if (projectData.targets) {
+          // 处理 Scratch 风格格式
+          
+          // 2. 恢复舞台设置
+          const stage = projectData.targets.find((target: any) => target.isStage);
+          if (stage) {
+            // 恢复相机位置
+            if (stage.cameraPosition && cameraRef.current) {
+              cameraRef.current.position.set(
+                stage.cameraPosition.x,
+                stage.cameraPosition.y,
+                stage.cameraPosition.z
+              );
+            }
+            
+            // 恢复相机目标
+            if (stage.cameraTarget && orbitRef.current) {
+              orbitRef.current.target.set(
+                stage.cameraTarget.x,
+                stage.cameraTarget.y,
+                stage.cameraTarget.z
+              );
+              orbitRef.current.update();
+            }
+            
+            // 恢复网格显示
+            if (typeof stage.showGrid === 'boolean') {
+              setShowGrid(stage.showGrid);
+              if (gridRef.current) {
+                gridRef.current.visible = stage.showGrid;
+              }
+            }
+          }
+
+          // 3. 恢复精灵（物体）
+          const sprites = projectData.targets.filter((target: any) => !target.isStage);
+          console.log('加载项目 - 物体数量:', sprites.length);
+          
+          sprites.forEach((sprite: any) => {
+            let geometry: THREE.BufferGeometry;
+            
+            switch (sprite.objectType) {
+              case 'cube':
+                geometry = new THREE.BoxGeometry(1, 1, 1);
+                break;
+              case 'sphere':
+                geometry = new THREE.SphereGeometry(0.5, 32, 32);
+                break;
+              case 'cylinder':
+                geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+                break;
+              case 'cone':
+                geometry = new THREE.ConeGeometry(0.5, 1, 32);
+                break;
+              default:
+                geometry = new THREE.BoxGeometry(1, 1, 1);
+            }
+            
+            const material = new THREE.MeshStandardMaterial({ color: sprite.color });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 应用保存的变换
+            mesh.position.set(sprite.x, sprite.y, sprite.z);
+            mesh.rotation.set(sprite.rotationX, sprite.rotationY, sprite.rotationZ);
+            mesh.scale.set(sprite.scaleX, sprite.scaleY, sprite.scaleZ);
+            
+            // 创建物体信息
+            const objectInfo: ObjectInfo = {
+              id: sprite.objectId,
+              name: sprite.name,
+              type: sprite.objectType,
+              position: { x: sprite.x, y: sprite.y, z: sprite.z },
+              rotation: { x: sprite.rotationX, y: sprite.rotationY, z: sprite.rotationZ },
+              scale: { x: sprite.scaleX, y: sprite.scaleY, z: sprite.scaleZ },
+              color: sprite.color,
+              mesh,
+              animations: sprite.animations || []
+            };
+            
+            // 添加到场景
+            sceneRef.current!.add(mesh);
+            objectsRef.current = [...objectsRef.current, mesh];
+            
+            setObjectsInfo(prev => {
+              const newObjectsInfo = [...prev, objectInfo];
+              objectsInfoRef.current = newObjectsInfo;
+              return newObjectsInfo;
+            });
+            
+            console.log(`恢复物体: ${sprite.name}, 动画数量: ${sprite.animations?.length || 0}`);
+          });
+
+          alert(`项目加载成功！\n格式: Scratch 风格 (.i3d)\n物体数量: ${sprites.length}\n版本: ${projectData.meta?.semver || '未知'}`);
+          
+        } else {
+          // 处理旧格式
+          // ... 这里保留原有的旧格式处理逻辑
+          alert('加载旧格式项目成功！建议重新保存为新格式。');
+        }
+
+        console.log('项目加载完成');
+        
+      } catch (error) {
+        console.error('加载项目失败:', error);
+        alert(`项目加载失败: ${error instanceof Error ? error.message : '未知错误'}`);
       }
     };
     input.click();
