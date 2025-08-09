@@ -450,7 +450,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
 
   // 属性编辑面板状态
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState<boolean>(true);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState<boolean>(false);
 
   // 获取当前活动的TransformControls
   const getCurrentControls = useCallback(() => {
@@ -2019,7 +2019,26 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       // 检查Ctrl + B组合键
       if (event.ctrlKey && event.key.toLowerCase() === 'b') {
         event.preventDefault(); // 阻止浏览器默认行为
-        setShowAnimationPanel(prev => !prev);
+        if (!showAnimationPanel && !showPropertiesPanel) {
+          // 如果都没有显示，默认显示动画面板
+          setShowAnimationPanel(true);
+          setShowPropertiesPanel(false);
+        } else {
+          // 如果有显示，则关闭所有
+          setShowAnimationPanel(false);
+          setShowPropertiesPanel(false);
+        }
+        return;
+      }
+      
+      // 检查F8键 - 全场景动画播放/停止
+      if (event.key === 'F8') {
+        event.preventDefault(); // 阻止浏览器默认行为
+        if (isPlayingSceneAnimation) {
+          stopSceneAnimation();
+        } else {
+          playSceneAnimation();
+        }
         return;
       }
       
@@ -2094,7 +2113,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       orbit.dispose();
       renderer.dispose();
     };
-  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize, setShowAnimationPanel]);
+  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize, setShowAnimationPanel, setShowPropertiesPanel, playSceneAnimation, stopSceneAnimation, isPlayingSceneAnimation]);
 
   // 暴露导出功能
   const handleExportClick = () => {
@@ -2252,16 +2271,20 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
-            onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
-            label="属性面板"
-            description="显示/隐藏物体属性面板"
-            color={showPropertiesPanel ? '#28a745' : '#333'}
-          />
-          <DropdownItem 
-            onClick={() => setShowAnimationPanel(!showAnimationPanel)}
-            label="动画面板 (Ctrl+B)"
-            description="显示/隐藏动画编辑面板"
-            color={showAnimationPanel ? '#28a745' : '#333'}
+            onClick={() => {
+              if (!showAnimationPanel && !showPropertiesPanel) {
+                // 如果都没有显示，默认显示动画面板
+                setShowAnimationPanel(true);
+                setShowPropertiesPanel(false);
+              } else {
+                // 如果有显示，则关闭所有
+                setShowAnimationPanel(false);
+                setShowPropertiesPanel(false);
+              }
+            }}
+            label="左侧面板 (Ctrl+B)"
+            description="显示/隐藏左侧编辑面板（动画编辑器和属性面板）"
+            color={(showAnimationPanel || showPropertiesPanel) ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setShowDataPanel(!showDataPanel)}
@@ -2275,15 +2298,15 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         <DropdownMenu title="动画" dropdownKey="animation" buttonColor="#333">
           <DropdownItem 
             onClick={playSceneAnimation}
-            label="播放全场景"
-            description="同时播放所有物体的动画"
+            label="播放全场景 (F8)"
+            description="同时播放所有物体的动画，按F8快捷键切换播放/停止"
             disabled={isPlayingSceneAnimation}
             color={isPlayingSceneAnimation ? '#6c757d' : '#28a745'}
           />
           <DropdownItem 
             onClick={stopSceneAnimation}
-            label="停止动画"
-            description="停止全场景动画播放"
+            label="停止动画 (F8)"
+            description="停止全场景动画播放，按F8快捷键切换播放/停止"
             disabled={!isPlayingSceneAnimation}
             color={!isPlayingSceneAnimation ? '#6c757d' : '#dc3545'}
           />
@@ -2360,10 +2383,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         minHeight: 0,
         overflow: 'hidden'
       }}>
-        {/* 左侧动画面板 */}
-        {showAnimationPanel && (
+        {/* 左侧面板 - 包含动画编辑器和属性面板的Tab切换 */}
+        {(showAnimationPanel || showPropertiesPanel) && (
           <div style={{
-            width: '40%',
+            width: '400px',
             backgroundColor: '#fafafa',
             borderRight: '1px solid #d9d9d9',
             display: 'flex',
@@ -2371,106 +2394,566 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             overflow: 'hidden',
             flexShrink: 0
           }}>
-            {/* 面板标题 */}
+            {/* Tab标签页 */}
             <div style={{
-              padding: '12px 16px',
-              backgroundColor: '#fff3e0',
-              borderBottom: '1px solid #ffe0b2',
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
+              backgroundColor: '#f8f9fa',
+              borderBottom: '1px solid #d9d9d9'
             }}>
-              <h3 style={{ 
-                margin: 0, 
-                fontSize: '16px', 
-                fontWeight: 'bold', 
-                color: '#e65100' 
-              }}>
-                Blockly 动画编辑器
-              </h3>
               <button
-                onClick={() => setShowAnimationPanel(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '18px',
-                  cursor: 'pointer',
-                  color: '#e65100',
-                  padding: '4px'
+                onClick={() => {
+                  setShowAnimationPanel(true);
+                  setShowPropertiesPanel(false);
                 }}
-                title="关闭动画面板"
+                style={{
+                  flex: 1,
+                  padding: '12px 16px',
+                  backgroundColor: showAnimationPanel ? '#fff3e0' : 'transparent',
+                  color: showAnimationPanel ? '#e65100' : '#666',
+                  border: 'none',
+                  borderBottom: showAnimationPanel ? '2px solid #e65100' : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  if (!showAnimationPanel) {
+                    e.currentTarget.style.backgroundColor = '#f0f0f0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (!showAnimationPanel) {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }
+                }}
+              >
+                动画编辑器
+              </button>
+              <button
+                onClick={() => {
+                  setShowPropertiesPanel(true);
+                  setShowAnimationPanel(false);
+                }}
+                style={{
+                  flex: 1,
+                  padding: '12px 16px',
+                  backgroundColor: showPropertiesPanel ? '#f5f5f5' : 'transparent',
+                  color: showPropertiesPanel ? '#333' : '#666',
+                  border: 'none',
+                  borderBottom: showPropertiesPanel ? '2px solid #333' : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  if (!showPropertiesPanel) {
+                    e.currentTarget.style.backgroundColor = '#f0f0f0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (!showPropertiesPanel) {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }
+                }}
+              >
+                物体属性
+              </button>
+              <button
+                onClick={() => {
+                  setShowAnimationPanel(false);
+                  setShowPropertiesPanel(false);
+                }}
+                style={{
+                  padding: '12px 8px',
+                  backgroundColor: 'transparent',
+                  color: '#999',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: 'bold'
+                }}
+                title="关闭面板"
               >
                 ×
               </button>
             </div>
 
-            {/* 面板内容 */}
+            {/* Tab内容区域 */}
             <div style={{
               flex: 1,
-              overflowY: 'auto',
-              padding: '0'
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column'
             }}>
-              {selectedObject ? (
-                <BlocklyAnimationEditor
-                  selectedObject={selectedObject}
-                  existingAnimationSteps={currentObjectAnimationSteps}
-                  onAnimationStepsChange={(steps) => {
-                    // 将 Blockly 生成的步骤转换为原有系统的动画序列
-                    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-                    if (objectInfo) {
-                      if (!objectInfo.animations) {
-                        objectInfo.animations = [];
-                      }
-                      
-                      // 更新或创建默认动画序列
-                      let defaultSequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
-                      if (!defaultSequence) {
-                        defaultSequence = {
-                          id: `blockly_seq_${Date.now()}`,
-                          name: 'Blockly动画',
-                          steps: [],
-                          isPlaying: false,
-                          currentStepIndex: 0
-                        };
-                        objectInfo.animations.push(defaultSequence);
-                      }
-                      
-                      // 更新步骤
-                      defaultSequence.steps = steps;
-                      setCurrentAnimationSequence(defaultSequence);
-                      setObjectsInfo([...objectsInfoRef.current]);
-                    }
-                  }}
-                  onPlayAnimation={(steps) => {
-                    // 使用现有的播放动画逻辑
-                    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-                    if (objectInfo && objectInfo.animations) {
-                      let sequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
-                      if (sequence) {
-                        sequence.steps = steps;
-                        playAnimationSequence(sequence);
-                      }
-                    }
-                  }}
-                  onStopAnimation={stopAnimation}
-                  onResetAnimation={resetAnimation}
-                  visible={true}
-                />
-              ) : (
-                <div style={{ 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  alignItems: 'center', 
-                  justifyContent: 'center', 
-                  textAlign: 'center',
-                  padding: '40px 20px', 
-                  color: '#999',
-                  fontSize: '14px'
+              {/* 动画编辑器Tab内容 */}
+              {showAnimationPanel && (
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '0'
                 }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
-                    请先在场景中选择一个物体来创建动画
-                  </div>
+                  {selectedObject ? (
+                    <BlocklyAnimationEditor
+                      selectedObject={selectedObject}
+                      existingAnimationSteps={currentObjectAnimationSteps}
+                      onAnimationStepsChange={(steps) => {
+                        // 将 Blockly 生成的步骤转换为原有系统的动画序列
+                        const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                        if (objectInfo) {
+                          if (!objectInfo.animations) {
+                            objectInfo.animations = [];
+                          }
+                          
+                          // 更新或创建默认动画序列
+                          let defaultSequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                          if (!defaultSequence) {
+                            defaultSequence = {
+                              id: `blockly_seq_${Date.now()}`,
+                              name: 'Blockly动画',
+                              steps: [],
+                              isPlaying: false,
+                              currentStepIndex: 0
+                            };
+                            objectInfo.animations.push(defaultSequence);
+                          }
+                          
+                          // 更新步骤
+                          defaultSequence.steps = steps;
+                          setCurrentAnimationSequence(defaultSequence);
+                          setObjectsInfo([...objectsInfoRef.current]);
+                        }
+                      }}
+                      onPlayAnimation={(steps) => {
+                        // 使用现有的播放动画逻辑
+                        const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                        if (objectInfo && objectInfo.animations) {
+                          let sequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                          if (sequence) {
+                            sequence.steps = steps;
+                            playAnimationSequence(sequence);
+                          }
+                        }
+                      }}
+                      onStopAnimation={stopAnimation}
+                      onResetAnimation={resetAnimation}
+                      visible={true}
+                    />
+                  ) : (
+                    <div style={{ 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      textAlign: 'center',
+                      padding: '40px 20px', 
+                      color: '#999',
+                      fontSize: '14px'
+                    }}>
+                      <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
+                      <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                        请先在场景中选择一个物体来创建动画
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 属性面板Tab内容 */}
+              {showPropertiesPanel && (
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '16px'
+                }}>
+                  {selectedObject ? (() => {
+                    const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
+                    if (!objectInfo) return <div style={{ textAlign: 'center', color: '#999' }}>无法获取物体信息</div>;
+
+                    return (
+                      <div>
+                        {/* 基本信息 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            基本信息
+                          </h4>
+                          
+                          {/* 物体名称 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              名称
+                            </label>
+                            <input
+                              type="text"
+                              value={objectInfo.name}
+                              onChange={(e) => updateSelectedObjectProperty('name', null, e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '8px',
+                                fontSize: '12px',
+                                border: '1px solid #d9d9d9',
+                                borderRadius: '4px',
+                                boxSizing: 'border-box'
+                              }}
+                              placeholder="输入物体名称"
+                            />
+                          </div>
+
+                          {/* 物体类型 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              类型
+                            </label>
+                            <div style={{
+                              padding: '8px',
+                              fontSize: '12px',
+                              backgroundColor: '#f5f5f5',
+                              border: '1px solid #e0e0e0',
+                              borderRadius: '4px',
+                              color: '#333'
+                            }}>
+                              {objectInfo.type}
+                            </div>
+                          </div>
+
+                          {/* 颜色 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              颜色
+                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                              <input
+                                type="color"
+                                value={`#${objectInfo.color.toString(16).padStart(6, '0')}`}
+                                onChange={(e) => updateSelectedObjectProperty('color', null, e.target.value)}
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  border: '2px solid #ccc',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  padding: '0'
+                                }}
+                                title="点击选择颜色"
+                              />
+                              <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
+                                #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
+                              </span>
+                              <input
+                                type="text"
+                                value={`#${objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}`}
+                                onChange={(e) => {
+                                  const hexValue = e.target.value.replace('#', '');
+                                  if (/^[0-9A-Fa-f]{6}$/.test(hexValue)) {
+                                    updateSelectedObjectProperty('color', null, `#${hexValue}`);
+                                  }
+                                }}
+                                style={{
+                                  width: '80px',
+                                  padding: '4px 6px',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase'
+                                }}
+                                placeholder="#FFFFFF"
+                                maxLength={7}
+                                title="输入十六进制颜色值"
+                              />
+                            </div>
+                            {/* 预设颜色 */}
+                            <div style={{ 
+                              display: 'grid', 
+                              gridTemplateColumns: 'repeat(8, 1fr)', 
+                              gap: '4px',
+                              marginBottom: '4px'
+                            }}>
+                              {[
+                                0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 
+                                0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8,
+                                0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+                                0xff00ff, 0x00ffff, 0xffffff, 0x000000
+                              ].map((color) => (
+                                <button
+                                  key={color}
+                                  onClick={() => updateSelectedObjectProperty('color', null, color)}
+                                  style={{
+                                    width: '20px',
+                                    height: '20px',
+                                    backgroundColor: `#${color.toString(16).padStart(6, '0')}`,
+                                    border: objectInfo.color === color ? '2px solid #333' : '1px solid #ccc',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    padding: '0'
+                                  }}
+                                  title={`颜色: #${color.toString(16).padStart(6, '0').toUpperCase()}`}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 位置 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            位置
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={objectInfo.position[axis].toFixed(2)}
+                                onChange={(e) => updateSelectedObjectProperty('position', axis, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 旋转 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            旋转 (度)
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="1"
+                                value={(objectInfo.rotation[axis] * 180 / Math.PI).toFixed(1)}
+                                onChange={(e) => {
+                                  const radians = parseFloat(e.target.value) * Math.PI / 180;
+                                  updateSelectedObjectProperty('rotation', axis, radians);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 缩放 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            缩放
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0.1"
+                                value={objectInfo.scale[axis].toFixed(2)}
+                                onChange={(e) => updateSelectedObjectProperty('scale', axis, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 快速操作 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            快速操作
+                          </h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('position', 'x', 0);
+                                updateSelectedObjectProperty('position', 'y', 0);
+                                updateSelectedObjectProperty('position', 'z', 0);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#2196f3',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置位置
+                            </button>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('rotation', 'x', 0);
+                                updateSelectedObjectProperty('rotation', 'y', 0);
+                                updateSelectedObjectProperty('rotation', 'z', 0);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#ff9800',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置旋转
+                            </button>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('scale', 'x', 1);
+                                updateSelectedObjectProperty('scale', 'y', 1);
+                                updateSelectedObjectProperty('scale', 'z', 1);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#4caf50',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置缩放
+                            </button>
+                            <button
+                              onClick={() => {
+                                const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
+                                const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                                updateSelectedObjectProperty('color', null, randomColor);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#9c27b0',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              随机颜色
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })() : (
+                    <div style={{ 
+                      textAlign: 'center', 
+                      padding: '40px 20px', 
+                      color: '#999',
+                      fontSize: '14px'
+                    }}>
+                      <div style={{ fontSize: '48px', marginBottom: '16px' }}>✕</div>
+                      <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
+                      <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                        请点击场景中的物体来选择并编辑其属性
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2482,454 +2965,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           ref={containerRef}
           style={{ 
             flex: 1,
-            width: (showAnimationPanel ? 'calc(100% - 300px)' : '100%') + (showPropertiesPanel ? ' - 320px' : ''),
             minHeight: 0,
             touchAction: 'none',
             overflow: 'hidden',
             transition: 'width 0.3s ease'
           }}
         />
-
-        {/* 右侧属性面板 */}
-        {showPropertiesPanel && (
-          <div style={{
-            width: '320px',
-            backgroundColor: '#fafafa',
-            borderLeft: '1px solid #d9d9d9',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            flexShrink: 0
-          }}>
-            {/* 面板标题 */}
-            <div style={{
-              padding: '12px 16px',
-              backgroundColor: '#f5f5f5',
-              borderBottom: '1px solid #d9d9d9',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
-            }}>
-              <h3 style={{ 
-                margin: 0, 
-                fontSize: '16px', 
-                fontWeight: 'bold', 
-                color: '#333' 
-              }}>
-                物体属性
-              </h3>
-              <button
-                onClick={() => setShowPropertiesPanel(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '18px',
-                  cursor: 'pointer',
-                  color: '#666',
-                  padding: '4px'
-                }}
-                title="关闭属性面板"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* 面板内容 */}
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '16px'
-            }}>
-              {selectedObject ? (() => {
-                const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
-                if (!objectInfo) return <div style={{ textAlign: 'center', color: '#999' }}>无法获取物体信息</div>;
-
-                return (
-                  <div>
-                    {/* 基本信息 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        基本信息
-                      </h4>
-                      
-                      {/* 物体名称 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          名称
-                        </label>
-                        <input
-                          type="text"
-                          value={objectInfo.name}
-                          onChange={(e) => updateSelectedObjectProperty('name', null, e.target.value)}
-                          style={{
-                            width: '100%',
-                            padding: '8px',
-                            fontSize: '12px',
-                            border: '1px solid #d9d9d9',
-                            borderRadius: '4px',
-                            boxSizing: 'border-box'
-                          }}
-                          placeholder="输入物体名称"
-                        />
-                      </div>
-
-                      {/* 物体类型 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          类型
-                        </label>
-                        <div style={{
-                          padding: '8px',
-                          fontSize: '12px',
-                          backgroundColor: '#f5f5f5',
-                          border: '1px solid #e0e0e0',
-                          borderRadius: '4px',
-                          color: '#333'
-                        }}>
-                          {objectInfo.type}
-                        </div>
-                      </div>
-
-                      {/* 颜色 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          颜色
-                        </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                          <input
-                            type="color"
-                            value={`#${objectInfo.color.toString(16).padStart(6, '0')}`}
-                            onChange={(e) => updateSelectedObjectProperty('color', null, e.target.value)}
-                            style={{
-                              width: '32px',
-                              height: '32px',
-                              border: '2px solid #ccc',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
-                              padding: '0'
-                            }}
-                            title="点击选择颜色"
-                          />
-                          <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
-                            #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
-                          </span>
-                          <input
-                            type="text"
-                            value={`#${objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}`}
-                            onChange={(e) => {
-                              const hexValue = e.target.value.replace('#', '');
-                              if (/^[0-9A-Fa-f]{6}$/.test(hexValue)) {
-                                updateSelectedObjectProperty('color', null, `#${hexValue}`);
-                              }
-                            }}
-                            style={{
-                              width: '80px',
-                              padding: '4px 6px',
-                              fontSize: '11px',
-                              fontFamily: 'monospace',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              textTransform: 'uppercase'
-                            }}
-                            placeholder="#FFFFFF"
-                            maxLength={7}
-                            title="输入十六进制颜色值"
-                          />
-                        </div>
-                        {/* 预设颜色 */}
-                        <div style={{ 
-                          display: 'grid', 
-                          gridTemplateColumns: 'repeat(8, 1fr)', 
-                          gap: '4px',
-                          marginBottom: '4px'
-                        }}>
-                          {[
-                            0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 
-                            0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8,
-                            0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
-                            0xff00ff, 0x00ffff, 0xffffff, 0x000000
-                          ].map((color) => (
-                            <button
-                              key={color}
-                              onClick={() => updateSelectedObjectProperty('color', null, color)}
-                              style={{
-                                width: '20px',
-                                height: '20px',
-                                backgroundColor: `#${color.toString(16).padStart(6, '0')}`,
-                                border: objectInfo.color === color ? '2px solid #333' : '1px solid #ccc',
-                                borderRadius: '3px',
-                                cursor: 'pointer',
-                                padding: '0'
-                              }}
-                              title={`颜色: #${color.toString(16).padStart(6, '0').toUpperCase()}`}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 位置 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        位置
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={objectInfo.position[axis].toFixed(2)}
-                            onChange={(e) => updateSelectedObjectProperty('position', axis, e.target.value)}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 旋转 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        旋转 (度)
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="1"
-                            value={(objectInfo.rotation[axis] * 180 / Math.PI).toFixed(1)}
-                            onChange={(e) => {
-                              const radians = parseFloat(e.target.value) * Math.PI / 180;
-                              updateSelectedObjectProperty('rotation', axis, radians);
-                            }}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 缩放 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        缩放
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0.1"
-                            value={objectInfo.scale[axis].toFixed(2)}
-                            onChange={(e) => updateSelectedObjectProperty('scale', axis, e.target.value)}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 快速操作 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        快速操作
-                      </h4>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('position', 'x', 0);
-                            updateSelectedObjectProperty('position', 'y', 0);
-                            updateSelectedObjectProperty('position', 'z', 0);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#2196f3',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          重置位置
-                        </button>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('rotation', 'x', 0);
-                            updateSelectedObjectProperty('rotation', 'y', 0);
-                            updateSelectedObjectProperty('rotation', 'z', 0);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#ff9800',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          重置旋转
-                        </button>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('scale', 'x', 1);
-                            updateSelectedObjectProperty('scale', 'y', 1);
-                            updateSelectedObjectProperty('scale', 'z', 1);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#4caf50',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          重置缩放
-                        </button>
-                        <button
-                          onClick={() => {
-                            const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
-                            const randomColor = colors[Math.floor(Math.random() * colors.length)];
-                            updateSelectedObjectProperty('color', null, randomColor);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#9c27b0',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          随机颜色
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })() : (
-                <div style={{ 
-                  textAlign: 'center', 
-                  padding: '40px 20px', 
-                  color: '#999',
-                  fontSize: '14px'
-                }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>✕</div>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
-                    请点击场景中的物体来选择并编辑其属性
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* 数据面板 */}
