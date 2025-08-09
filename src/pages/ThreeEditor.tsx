@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import BlocklyAnimationEditor from '../components/BlocklyAnimationEditor_New';
 import JSZip from 'jszip';
 
@@ -511,11 +513,11 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 下拉菜单组件
   const DropdownMenu: React.FC<{
     title: string;
-    icon: string;
+    icon?: string;
     dropdownKey: string;
     children: React.ReactNode;
     buttonColor?: string;
-  }> = ({ title, icon, dropdownKey, children, buttonColor = '#666' }) => {
+  }> = ({ title, dropdownKey, children, buttonColor = '#666' }) => {
     const isOpen = openDropdown === dropdownKey;
     
     return (
@@ -549,7 +551,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             }
           }}
         >
-          {icon} {title} {isOpen ? '▲' : '▼'}
+          {title} {isOpen ? '▲' : '▼'}
         </button>
         
         {isOpen && (
@@ -576,12 +578,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 菜单项组件
   const DropdownItem: React.FC<{
     onClick: () => void;
-    icon: string;
+    icon?: string;
     label: string;
     description?: string;
     disabled?: boolean;
     color?: string;
-  }> = ({ onClick, icon, label, description, disabled = false, color = '#333' }) => (
+  }> = ({ onClick, label, description, disabled = false, color = '#333' }) => (
     <div
       onClick={() => {
         if (!disabled) {
@@ -609,7 +611,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         }
       }}
     >
-      <span style={{ fontSize: '14px' }}>{icon}</span>
       <div>
         <div style={{ fontSize: '13px', fontWeight: '500', color }}>{label}</div>
         {description && (
@@ -1120,6 +1121,243 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     };
     input.click();
   }, [restoreSceneFromData]);
+
+  // 导入STL文件
+  const importSTLFile = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.stl';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const arrayBuffer = e.target?.result as ArrayBuffer;
+            const loader = new STLLoader();
+            const geometry = loader.parse(arrayBuffer);
+            
+            // 创建材质和网格
+            const material = new THREE.MeshStandardMaterial({ 
+              color: 0x606060,
+              side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 计算几何体的包围盒来调整位置和大小
+            geometry.computeBoundingBox();
+            const boundingBox = geometry.boundingBox;
+            if (boundingBox) {
+              const center = boundingBox.getCenter(new THREE.Vector3());
+              geometry.translate(-center.x, -center.y, -center.z);
+              
+              // 调整大小以适应场景
+              const size = boundingBox.getSize(new THREE.Vector3());
+              const maxSize = Math.max(size.x, size.y, size.z);
+              const scale = Math.min(5, 10 / maxSize); // 限制最大尺寸
+              mesh.scale.setScalar(scale);
+            }
+            
+            mesh.position.set(0, 0, 0);
+            
+            // 生成唯一ID
+            const objectId = createUUID();
+            
+            // 创建物体信息
+            const objectInfo: ObjectInfo = {
+              id: objectId,
+              name: `STL_${file.name.replace('.stl', '')}_${objectId.slice(0, 8)}`,
+              type: 'cube', // STL文件默认归类为cube类型
+              position: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+              scale: { x: mesh.scale.x, y: mesh.scale.y, z: mesh.scale.z },
+              color: 0x606060,
+              mesh
+            };
+            
+            // 添加到场景
+            if (sceneRef.current) {
+              sceneRef.current.add(mesh);
+              
+              // 更新物体引用数组
+              objectsRef.current = [...objectsRef.current, mesh];
+              
+              // 更新物体信息数组
+              setObjectsInfo(prev => [...prev, objectInfo]);
+              objectsInfoRef.current = [...objectsInfoRef.current, objectInfo];
+              
+              // 自动选中新导入的物体
+              if (translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+                requestAnimationFrame(() => {
+                  if (selectedObjectRef.current !== mesh) {
+                    setSelectedObject(mesh);
+                    selectedObjectRef.current = mesh;
+                  }
+                });
+              }
+              
+              console.log(`成功导入STL文件: ${file.name}，物体ID: ${objectId}`);
+              alert(`成功导入STL文件: ${file.name}`);
+            }
+          } catch (error) {
+            console.error('导入STL文件失败:', error);
+            alert(`导入STL文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      }
+    };
+    input.click();
+  }, [createUUID]);
+
+  // 导入GLTF文件
+  const importGLTFFile = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.gltf,.glb';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const loader = new GLTFLoader();
+            
+            if (file.name.endsWith('.glb')) {
+              // GLB文件（二进制格式）
+              const arrayBuffer = e.target?.result as ArrayBuffer;
+              loader.parse(arrayBuffer, '', (gltf) => {
+                handleGLTFLoad(gltf, file.name);
+              }, (error) => {
+                console.error('解析GLB文件失败:', error);
+                alert(`解析GLB文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+              });
+            } else {
+              // GLTF文件（JSON格式）
+              const text = e.target?.result as string;
+              const gltfData = JSON.parse(text);
+              loader.parse(JSON.stringify(gltfData), '', (gltf) => {
+                handleGLTFLoad(gltf, file.name);
+              }, (error) => {
+                console.error('解析GLTF文件失败:', error);
+                alert(`解析GLTF文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+              });
+            }
+          } catch (error) {
+            console.error('导入GLTF文件失败:', error);
+            alert('导入GLTF文件失败，请检查文件格式');
+          }
+        };
+        
+        if (file.name.endsWith('.glb')) {
+          reader.readAsArrayBuffer(file);
+        } else {
+          reader.readAsText(file);
+        }
+      }
+    };
+    input.click();
+  }, []);
+
+  // 处理GLTF加载完成
+  const handleGLTFLoad = useCallback((gltf: any, fileName: string) => {
+    try {
+      if (!sceneRef.current) return;
+      
+      // 获取GLTF场景中的所有网格
+      const meshes: THREE.Mesh[] = [];
+      gltf.scene.traverse((child: any) => {
+        if (child.isMesh) {
+          meshes.push(child);
+        }
+      });
+      
+      if (meshes.length === 0) {
+        console.warn('GLTF文件中没有找到网格对象');
+        return;
+      }
+      
+      // 计算整个模型的包围盒
+      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      
+      // 移动到原点
+      gltf.scene.position.sub(center);
+      
+      // 调整大小
+      const maxSize = Math.max(size.x, size.y, size.z);
+      const scale = Math.min(5, 10 / maxSize);
+      gltf.scene.scale.setScalar(scale);
+      
+      // 设置位置
+      gltf.scene.position.set(0, 0, 0);
+      
+      // 为每个网格创建物体信息
+      meshes.forEach((mesh, index) => {
+        const objectId = createUUID();
+        
+        // 确保材质存在
+        if (!mesh.material) {
+          mesh.material = new THREE.MeshStandardMaterial({ color: 0x808080 });
+        }
+        
+        // 获取材质颜色
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        const color = material.color ? material.color.getHex() : 0x808080;
+        
+        const objectInfo: ObjectInfo = {
+          id: objectId,
+          name: `GLTF_${fileName.replace(/\.(gltf|glb)$/, '')}_${index + 1}_${objectId.slice(0, 8)}`,
+          type: 'cube', // GLTF网格默认归类为cube类型
+          position: { 
+            x: mesh.position.x, 
+            y: mesh.position.y, 
+            z: mesh.position.z 
+          },
+          rotation: { 
+            x: mesh.rotation.x, 
+            y: mesh.rotation.y, 
+            z: mesh.rotation.z 
+          },
+          scale: { 
+            x: mesh.scale.x * scale, 
+            y: mesh.scale.y * scale, 
+            z: mesh.scale.z * scale 
+          },
+          color,
+          mesh
+        };
+        
+        // 更新物体引用数组
+        objectsRef.current = [...objectsRef.current, mesh];
+        
+        // 更新物体信息数组
+        setObjectsInfo(prev => [...prev, objectInfo]);
+        objectsInfoRef.current = [...objectsInfoRef.current, objectInfo];
+      });
+      
+      // 添加整个GLTF场景到Three.js场景
+      sceneRef.current.add(gltf.scene);
+      
+      // 自动选中第一个网格
+      if (meshes.length > 0 && translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+        requestAnimationFrame(() => {
+          const firstMesh = meshes[0];
+          if (selectedObjectRef.current !== firstMesh) {
+            setSelectedObject(firstMesh);
+            selectedObjectRef.current = firstMesh;
+          }
+        });
+      }
+      
+      console.log(`成功导入GLTF文件: ${fileName}，包含 ${meshes.length} 个网格对象`);
+      alert(`成功导入GLTF文件: ${fileName}，包含 ${meshes.length} 个网格对象`);
+    } catch (error) {
+      console.error('处理GLTF文件失败:', error);
+      alert(`处理GLTF文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, [createUUID]);
 
   // 保存完整项目（参考 Scratch 3.0 .sb3 文件格式）
   const saveProject = useCallback(async () => {
@@ -1778,6 +2016,18 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
     // 添加键盘事件监听器（快捷键）
     const handleKeyDown = (event: KeyboardEvent) => {
+      // 检查Ctrl + B组合键
+      if (event.ctrlKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault(); // 阻止浏览器默认行为
+        setShowAnimationPanel(prev => !prev);
+        return;
+      }
+      
+      // 如果有输入框聚焦，不处理其他快捷键
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      
       switch (event.key.toLowerCase()) {
         case 'g': // G键 - 移动模式
           setTransformModeHandler('translate');
@@ -1844,7 +2094,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       orbit.dispose();
       renderer.dispose();
     };
-  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize]);
+  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize, setShowAnimationPanel]);
 
   // 暴露导出功能
   const handleExportClick = () => {
@@ -1894,70 +2144,71 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         flexShrink: 0
       }}>
         {/* 文件菜单 */}
-        <DropdownMenu title="文件" icon="📁" dropdownKey="file" buttonColor="#333">
+        <DropdownMenu title="文件" dropdownKey="file" buttonColor="#333">
           <DropdownItem 
             onClick={saveProject}
-            icon="💾"
             label="保存项目"
             description="将整个3D项目打包下载（包含模型、动画、代码）"
           />
           <DropdownItem 
             onClick={loadProject}
-            icon="📂"
             label="打开项目"
             description="导入之前保存的项目文件"
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
             onClick={handleExportClick}
-            icon="📁"
             label="导出GLTF"
             description="导出当前场景为GLTF格式"
           />
           <DropdownItem 
             onClick={exportObjectsData}
-            icon="💾"
             label="导出数据"
             description="导出场景数据为JSON文件"
           />
           <DropdownItem 
             onClick={importObjectsData}
-            icon="📂"
             label="导入数据"
             description="从JSON文件导入场景数据"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
+            onClick={importSTLFile}
+            label="导入STL"
+            description="导入STL格式的3D模型文件"
+          />
+          <DropdownItem 
+            onClick={importGLTFFile}
+            label="导入GLTF/GLB"
+            description="导入GLTF或GLB格式的3D模型文件"
           />
         </DropdownMenu>
 
         {/* 对象菜单 */}
-        <DropdownMenu title="对象" icon="📦" dropdownKey="objects" buttonColor="#333">
+        <DropdownMenu title="对象" dropdownKey="objects" buttonColor="#333">
           <DropdownItem 
             onClick={() => addObject('cube')}
-            icon="🧊"
             label="立方体"
             description="在原点(0,0,0)添加一个立方体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('sphere')}
-            icon="⚽"
             label="球体"
             description="在原点(0,0,0)添加一个球体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cylinder')}
-            icon="🛢️"
             label="圆柱体"
             description="在原点(0,0,0)添加一个圆柱体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cone')}
-            icon="🔺"
             label="圆锥体"
             description="在原点(0,0,0)添加一个圆锥体到场景中"
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
             onClick={clearObjects}
-            icon="🗑️"
             label="清空场景"
             description="删除场景中所有添加的物体"
             color="#dc3545"
@@ -1965,24 +2216,21 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 变换菜单 */}
-        <DropdownMenu title="变换" icon="🔧" dropdownKey="transform" buttonColor="#333">
+        <DropdownMenu title="变换" dropdownKey="transform" buttonColor="#333">
           <DropdownItem 
             onClick={() => setTransformModeHandler('translate')}
-            icon={transformMode === 'translate' ? '✅' : '↔️'}
             label="移动模式 (G)"
             description="拖拽物体改变位置"
             color={transformMode === 'translate' ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setTransformModeHandler('rotate')}
-            icon={transformMode === 'rotate' ? '✅' : '🔄'}
             label="旋转模式 (R)"
             description="旋转物体改变朝向"
             color={transformMode === 'rotate' ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setTransformModeHandler('scale')}
-            icon={transformMode === 'scale' ? '✅' : '📏'}
             label="缩放模式 (S)"
             description="缩放物体改变大小"
             color={transformMode === 'scale' ? '#28a745' : '#333'}
@@ -1990,38 +2238,33 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 视图菜单 */}
-        <DropdownMenu title="视图" icon="👁️" dropdownKey="view" buttonColor="#333">
+        <DropdownMenu title="视图" dropdownKey="view" buttonColor="#333">
           <DropdownItem 
             onClick={toggleGrid}
-            icon={showGrid ? '✅' : '🔳'}
             label="网格显示"
             description="切换地面网格的显示状态"
             color={showGrid ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={toggleFullscreen}
-            icon={isFullscreen ? '🔙' : '⛶'}
             label={isFullscreen ? '退出全屏' : '全屏模式'}
             description={isFullscreen ? '退出全屏显示' : '进入全屏模式'}
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
             onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
-            icon={showPropertiesPanel ? '✅' : '🔧'}
             label="属性面板"
             description="显示/隐藏物体属性面板"
             color={showPropertiesPanel ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setShowAnimationPanel(!showAnimationPanel)}
-            icon={showAnimationPanel ? '✅' : '🎬'}
-            label="动画面板"
+            label="动画面板 (Ctrl+B)"
             description="显示/隐藏动画编辑面板"
             color={showAnimationPanel ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setShowDataPanel(!showDataPanel)}
-            icon={showDataPanel ? '✅' : '📊'}
             label="数据面板"
             description="显示/隐藏场景数据分析面板"
             color={showDataPanel ? '#28a745' : '#333'}
@@ -2029,10 +2272,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 动画菜单 */}
-        <DropdownMenu title="动画" icon="🎭" dropdownKey="animation" buttonColor="#333">
+        <DropdownMenu title="动画" dropdownKey="animation" buttonColor="#333">
           <DropdownItem 
             onClick={playSceneAnimation}
-            icon="▶️"
             label="播放全场景"
             description="同时播放所有物体的动画"
             disabled={isPlayingSceneAnimation}
@@ -2040,7 +2282,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           />
           <DropdownItem 
             onClick={stopSceneAnimation}
-            icon="⏹️"
             label="停止动画"
             description="停止全场景动画播放"
             disabled={!isPlayingSceneAnimation}
@@ -2048,7 +2289,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           />
           <DropdownItem 
             onClick={resetSceneAnimation}
-            icon="🔄"
             label="重置动画"
             description="重置全场景动画到初始状态"
             color="#17a2b8"
@@ -2068,7 +2308,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: '1px solid #dee2e6'
           }}>
-            📦 {objectsInfo.length} 个物体
+            {objectsInfo.length} 个物体
           </div>
           
           <div style={{
@@ -2079,7 +2319,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: `1px solid ${transformMode === 'translate' ? '#c3e6cb' : transformMode === 'rotate' ? '#f0e68c' : '#b3daff'}`
           }}>
-            {transformMode === 'translate' ? '↔️ 移动' : transformMode === 'rotate' ? '🔄 旋转' : '📏 缩放'}
+            {transformMode === 'translate' ? '移动' : transformMode === 'rotate' ? '旋转' : '缩放'}
           </div>
 
           {selectedObject && (
@@ -2092,7 +2332,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               border: '1px solid #ffeaa7',
               fontWeight: '500'
             }}>
-              🎯 已选中
+              已选中
             </div>
           )}
 
@@ -2107,7 +2347,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               fontWeight: '500',
               animation: 'pulse 1.5s ease-in-out infinite alternate'
             }}>
-              🎭 动画播放中
+              动画播放中
             </div>
           )}
         </div>
@@ -2276,7 +2516,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                 fontWeight: 'bold', 
                 color: '#333' 
               }}>
-                🔧 物体属性
+                物体属性
               </h3>
               <button
                 onClick={() => setShowPropertiesPanel(false)}
@@ -2316,7 +2556,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         borderBottom: '2px solid #e0e0e0',
                         paddingBottom: '8px'
                       }}>
-                        📋 基本信息
+                        基本信息
                       </h4>
                       
                       {/* 物体名称 */}
@@ -2463,7 +2703,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         borderBottom: '2px solid #e0e0e0',
                         paddingBottom: '8px'
                       }}>
-                        📍 位置
+                        位置
                       </h4>
                       {(['x', 'y', 'z'] as const).map(axis => (
                         <div key={axis} style={{ marginBottom: '8px' }}>
@@ -2504,7 +2744,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         borderBottom: '2px solid #e0e0e0',
                         paddingBottom: '8px'
                       }}>
-                        🔄 旋转 (度)
+                        旋转 (度)
                       </h4>
                       {(['x', 'y', 'z'] as const).map(axis => (
                         <div key={axis} style={{ marginBottom: '8px' }}>
@@ -2548,7 +2788,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         borderBottom: '2px solid #e0e0e0',
                         paddingBottom: '8px'
                       }}>
-                        📏 缩放
+                        缩放
                       </h4>
                       {(['x', 'y', 'z'] as const).map(axis => (
                         <div key={axis} style={{ marginBottom: '8px' }}>
@@ -2590,7 +2830,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         borderBottom: '2px solid #e0e0e0',
                         paddingBottom: '8px'
                       }}>
-                        ⚡ 快速操作
+                        快速操作
                       </h4>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <button
@@ -2610,7 +2850,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                             fontWeight: 'bold'
                           }}
                         >
-                          📍 重置位置
+                          重置位置
                         </button>
                         <button
                           onClick={() => {
@@ -2629,7 +2869,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                             fontWeight: 'bold'
                           }}
                         >
-                          🔄 重置旋转
+                          重置旋转
                         </button>
                         <button
                           onClick={() => {
@@ -2648,7 +2888,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                             fontWeight: 'bold'
                           }}
                         >
-                          📏 重置缩放
+                          重置缩放
                         </button>
                         <button
                           onClick={() => {
@@ -2667,7 +2907,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                             fontWeight: 'bold'
                           }}
                         >
-                          🎨 随机颜色
+                          随机颜色
                         </button>
                       </div>
                     </div>
@@ -2680,7 +2920,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                   color: '#999',
                   fontSize: '14px'
                 }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎯</div>
+                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>✕</div>
                   <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
                   <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
                     请点击场景中的物体来选择并编辑其属性
@@ -2718,7 +2958,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             justifyContent: 'space-between'
           }}>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#333' }}>
-              📊 场景数据分析
+              场景数据分析
             </h3>
             <button
               onClick={() => setShowDataPanel(false)}
@@ -2745,7 +2985,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 统计信息 */}
             <div style={{ marginBottom: '20px' }}>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                📈 场景统计
+                场景统计
               </h4>
               {(() => {
                 const stats = getSceneStats();
@@ -2787,7 +3027,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 物体列表 */}
             <div style={{ marginBottom: '20px' }}>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                📦 物体列表 ({objectsInfo.length})
+                物体列表 ({objectsInfo.length})
               </h4>
               <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                 {objectsInfo.length === 0 ? (
@@ -2842,7 +3082,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 快捷操作 */}
             <div>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                ⚡ 快捷操作
+                快捷操作
               </h4>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 <button
