@@ -96,6 +96,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 下拉菜单状态
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // 当前打开的下拉菜单
   
+  // 拖拽添加物体状态
+  const [dragAddMode, setDragAddMode] = useState<'cube' | 'sphere' | 'cylinder' | 'cone' | null>(null); // 拖拽添加模式
+  
   // 播放动画序列
   const playAnimationSequence = useCallback((sequence: AnimationSequence) => {
     if (!selectedObject || sequence.steps.length === 0) return;
@@ -1825,7 +1828,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   return (
     <div style={{ 
-      height: '100%', 
+      height: '100vh', 
       display: 'flex', 
       flexDirection: 'column', 
       maxHeight: '100%', 
@@ -2095,7 +2098,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         {/* 左侧动画面板 */}
         {showAnimationPanel && (
           <div style={{
-            width: '400px',
+            width: '40%',
             backgroundColor: '#fafafa',
             borderRight: '1px solid #d9d9d9',
             display: 'flex',

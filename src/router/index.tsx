@@ -33,14 +33,15 @@ export const router = createBrowserRouter([
 			path: 'ammo',
 			element: <AmmoDemo />,
 		},
-		{
-			path: 'three-editor',
-			element: <ThreeEditor />,
-		},
+		
 		],
 	},
 	{
 		path: '/login',
 		element: <Login />,
 	},
+	{
+			path: '/three-editor',
+			element: <ThreeEditor />,
+		},
 ]);
