@@ -96,8 +96,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 下拉菜单状态
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // 当前打开的下拉菜单
   
-  // 拖拽添加物体状态
-  const [dragAddMode, setDragAddMode] = useState<'cube' | 'sphere' | 'cylinder' | 'cone' | null>(null); // 拖拽添加模式
+  // 鼠标位置状态
+  const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   
   // 播放动画序列
   const playAnimationSequence = useCallback((sequence: AnimationSequence) => {
@@ -722,7 +722,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   // 更新选中物体的属性
   const updateSelectedObjectProperty = useCallback((
-    property: 'name' | 'position' | 'rotation' | 'scale', 
+    property: 'name' | 'position' | 'rotation' | 'scale' | 'color', 
     axis: 'x' | 'y' | 'z' | null, 
     value: string | number
   ) => {
@@ -735,6 +735,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     if (property === 'name') {
       objectInfo.name = value as string;
+    } else if (property === 'color') {
+      // 处理颜色更新
+      const colorValue = typeof value === 'string' ? parseInt(value.replace('#', ''), 16) : value as number;
+      objectInfo.color = colorValue;
+      
+      // 更新mesh的材质颜色
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.color.setHex(colorValue);
     } else if (axis) {
       const numValue = typeof value === 'string' ? parseFloat(value) : value;
       if (isNaN(numValue)) return;
@@ -851,15 +859,18 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   // 添加不同类型的物体
   const addObject = useCallback((type: 'cube' | 'sphere' | 'cylinder' | 'cone') => {
-    if (!sceneRef.current) return;
+    if (!sceneRef.current || !cameraRef.current || !rendererRef.current) return;
 
     let geometry: THREE.BufferGeometry;
     let material: THREE.Material;
     
-    // 随机位置
-    const x = (Math.random() - 0.5) * 8;
-    const z = (Math.random() - 0.5) * 8;
-    const y = Math.random() * 3 + 0.5;
+    // 计算物体位置 - 在原点创建物体
+    let x: number, y: number, z: number;
+    
+    // 在原点创建物体
+    x = 0;
+    y = 0;
+    z = 0;
 
     // 随机颜色
     const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
@@ -1661,6 +1672,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
     camera.position.set(3, 3, 3);
+    camera.lookAt(0, 0, 0); // 直接让相机看向原点
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1676,12 +1688,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
     // 3. Grid Helper
     const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x888888, 0xcccccc);
-    gridHelper.position.y = -0.5; // 稍微降低网格位置
+    gridHelper.position.y = 0; // 网格在原点平面上
     scene.add(gridHelper);
     gridRef.current = gridHelper;
 
     // 4. OrbitControls
     const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.target.set(0, 0, 0); // 确保相机对着原点
+    orbit.update(); // 更新控制器状态
     orbitRef.current = orbit;
 
     // 5. TransformControls - 创建三个独立的控制器
@@ -1752,6 +1766,16 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     };
     renderer.domElement.addEventListener('click', handleClick);
 
+    // 添加鼠标移动事件监听器来跟踪鼠标位置
+    const handleMouseMove = (event: MouseEvent) => {
+      const newMousePos = {
+        x: event.clientX,
+        y: event.clientY
+      };
+      mousePositionRef.current = newMousePos;
+    };
+    renderer.domElement.addEventListener('mousemove', handleMouseMove);
+
     // 添加键盘事件监听器（快捷键）
     const handleKeyDown = (event: KeyboardEvent) => {
       switch (event.key.toLowerCase()) {
@@ -1781,6 +1805,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     return () => {
       // 移除事件监听器
       renderer.domElement.removeEventListener('click', handleClick);
+      renderer.domElement.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('keydown', handleKeyDown);
       
       resizeObserver.disconnect();
@@ -1909,25 +1934,25 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             onClick={() => addObject('cube')}
             icon="🧊"
             label="立方体"
-            description="添加一个立方体到场景中"
+            description="在原点(0,0,0)添加一个立方体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('sphere')}
             icon="⚽"
             label="球体"
-            description="添加一个球体到场景中"
+            description="在原点(0,0,0)添加一个球体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cylinder')}
             icon="🛢️"
             label="圆柱体"
-            description="添加一个圆柱体到场景中"
+            description="在原点(0,0,0)添加一个圆柱体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cone')}
             icon="🔺"
             label="圆锥体"
-            description="添加一个圆锥体到场景中"
+            description="在原点(0,0,0)添加一个圆锥体到场景中"
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
@@ -2355,17 +2380,75 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                         }}>
                           颜色
                         </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <div style={{ 
-                            width: '32px', 
-                            height: '32px', 
-                            backgroundColor: `#${objectInfo.color.toString(16).padStart(6, '0')}`,
-                            border: '2px solid #ccc',
-                            borderRadius: '4px'
-                          }}></div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                          <input
+                            type="color"
+                            value={`#${objectInfo.color.toString(16).padStart(6, '0')}`}
+                            onChange={(e) => updateSelectedObjectProperty('color', null, e.target.value)}
+                            style={{
+                              width: '32px',
+                              height: '32px',
+                              border: '2px solid #ccc',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              padding: '0'
+                            }}
+                            title="点击选择颜色"
+                          />
                           <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
                             #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
                           </span>
+                          <input
+                            type="text"
+                            value={`#${objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}`}
+                            onChange={(e) => {
+                              const hexValue = e.target.value.replace('#', '');
+                              if (/^[0-9A-Fa-f]{6}$/.test(hexValue)) {
+                                updateSelectedObjectProperty('color', null, `#${hexValue}`);
+                              }
+                            }}
+                            style={{
+                              width: '80px',
+                              padding: '4px 6px',
+                              fontSize: '11px',
+                              fontFamily: 'monospace',
+                              border: '1px solid #d9d9d9',
+                              borderRadius: '4px',
+                              textTransform: 'uppercase'
+                            }}
+                            placeholder="#FFFFFF"
+                            maxLength={7}
+                            title="输入十六进制颜色值"
+                          />
+                        </div>
+                        {/* 预设颜色 */}
+                        <div style={{ 
+                          display: 'grid', 
+                          gridTemplateColumns: 'repeat(8, 1fr)', 
+                          gap: '4px',
+                          marginBottom: '4px'
+                        }}>
+                          {[
+                            0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 
+                            0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8,
+                            0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+                            0xff00ff, 0x00ffff, 0xffffff, 0x000000
+                          ].map((color) => (
+                            <button
+                              key={color}
+                              onClick={() => updateSelectedObjectProperty('color', null, color)}
+                              style={{
+                                width: '20px',
+                                height: '20px',
+                                backgroundColor: `#${color.toString(16).padStart(6, '0')}`,
+                                border: objectInfo.color === color ? '2px solid #333' : '1px solid #ccc',
+                                borderRadius: '3px',
+                                cursor: 'pointer',
+                                padding: '0'
+                              }}
+                              title={`颜色: #${color.toString(16).padStart(6, '0').toUpperCase()}`}
+                            />
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -2566,6 +2649,25 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                           }}
                         >
                           📏 重置缩放
+                        </button>
+                        <button
+                          onClick={() => {
+                            const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
+                            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                            updateSelectedObjectProperty('color', null, randomColor);
+                          }}
+                          style={{
+                            padding: '8px',
+                            backgroundColor: '#9c27b0',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          🎨 随机颜色
                         </button>
                       </div>
                     </div>
