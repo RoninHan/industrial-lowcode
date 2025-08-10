@@ -17,7 +17,9 @@ type TransformBoxProps = {
 
 // 动画类型
 type AnimationType = 'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'moveForward' | 'moveBackward' | 
-                    'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause';
+                    'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause' |
+                    'bendJoint' | 'stretchJoint' | 'rotateJoint' | 'resetJoint' |
+                    'chainRotate' | 'constrainedRotate' | 'hingeBend' | 'ballRotate';
 
 // 动画步骤接口
 interface AnimationStep {
@@ -26,6 +28,8 @@ interface AnimationStep {
   duration: number; // 持续时间（秒）
   distance?: number; // 移动距离或旋转角度
   scale?: number; // 缩放倍数
+  angle?: number; // 新增：关节角度
+  amount?: number; // 新增：伸展幅度
 }
 
 // 动画序列接口
@@ -41,13 +45,21 @@ interface AnimationSequence {
 interface ObjectInfo {
   id: string;
   name: string; // 添加名称字段
-  type: 'cube' | 'sphere' | 'cylinder' | 'cone';
+  type: 'cube' | 'sphere' | 'cylinder' | 'cone' | 'bone' | 'joint' | 'limb';
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
   scale: { x: number; y: number; z: number };
   color: number;
   mesh?: THREE.Mesh; // 运行时的mesh引用
   animations?: AnimationSequence[]; // 动画序列
+  // 骨骼系统相关属性
+  parentId?: string; // 父对象ID（用于骨骼连接）
+  childrenIds?: string[]; // 子对象ID列表
+  jointType?: 'hinge' | 'ball' | 'fixed'; // 关节类型
+  constraints?: {
+    minAngle?: { x: number; y: number; z: number };
+    maxAngle?: { x: number; y: number; z: number };
+  }; // 关节约束
 }
 
 
@@ -172,6 +184,61 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           case 'scaleDown':
             const downScale = step.scale || 0.8;
             selectedObject.scale.setScalar(startScale.x + (downScale - startScale.x) * progress);
+            break;
+          
+          // 骨骼关节动画
+          case 'bendJoint':
+          case 'hingeBend':
+            // 关节弯曲 - 在Y轴上旋转
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 4) * progress;
+            break;
+          
+          case 'ballRotate':
+            // 球形关节旋转 - 同时在多个轴上旋转
+            selectedObject.rotation.x = startRotation.x + (step.angle || Math.PI / 6) * progress;
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 6) * progress;
+            selectedObject.rotation.z = startRotation.z + (step.angle || Math.PI / 6) * progress;
+            break;
+          
+          case 'rotateJoint':
+            // 自由旋转关节 - 主要在Z轴旋转
+            selectedObject.rotation.z = startRotation.z + (step.angle || Math.PI / 2) * progress;
+            break;
+          
+          case 'chainRotate':
+            // 链式传动旋转 - 在Y轴旋转，并带动子物体
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 3) * progress;
+            
+            // 传播旋转到子骨骼
+            const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+            if (objectInfo) {
+              propagateMotion(objectInfo.id, {
+                rotation: new THREE.Euler(0, (step.angle || Math.PI / 3) * progress * 0.1, 0)
+              });
+            }
+            break;
+          
+          case 'constrainedRotate':
+            // 约束旋转 - 限制在X轴旋转
+            const constrainedAngle = Math.min(step.angle || Math.PI / 4, Math.PI / 2); // 最大90度
+            selectedObject.rotation.x = startRotation.x + constrainedAngle * progress;
+            break;
+          
+          case 'stretchJoint':
+            // 关节伸展 - 在Y轴方向拉伸
+            const stretchAmount = step.amount || 1.5;
+            selectedObject.scale.y = startScale.y + (stretchAmount - startScale.y) * progress;
+            break;
+          
+          case 'resetJoint':
+            // 关节重置 - 回到初始状态
+            if (animationInitialState.current) {
+              selectedObject.position.lerpVectors(startPosition, animationInitialState.current.position, progress);
+              selectedObject.rotation.x = startRotation.x + (animationInitialState.current.rotation.x - startRotation.x) * progress;
+              selectedObject.rotation.y = startRotation.y + (animationInitialState.current.rotation.y - startRotation.y) * progress;
+              selectedObject.rotation.z = startRotation.z + (animationInitialState.current.rotation.z - startRotation.z) * progress;
+              selectedObject.scale.lerpVectors(startScale, animationInitialState.current.scale, progress);
+            }
             break;
         }
         
@@ -345,6 +412,59 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             case 'scaleDown':
               const downScale = step.scale || 0.8;
               mesh.scale.setScalar(startScale.x + (downScale - startScale.x) * progress);
+              break;
+            
+            // 骨骼关节动画
+            case 'bendJoint':
+            case 'hingeBend':
+              // 关节弯曲 - 在Y轴上旋转
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 4) * progress;
+              break;
+            
+            case 'ballRotate':
+              // 球形关节旋转 - 同时在多个轴上旋转
+              mesh.rotation.x = startRotation.x + (step.angle || Math.PI / 6) * progress;
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 6) * progress;
+              mesh.rotation.z = startRotation.z + (step.angle || Math.PI / 6) * progress;
+              break;
+            
+            case 'rotateJoint':
+              // 自由旋转关节 - 主要在Z轴旋转
+              mesh.rotation.z = startRotation.z + (step.angle || Math.PI / 2) * progress;
+              break;
+            
+            case 'chainRotate':
+              // 链式传动旋转 - 在Y轴旋转，并带动子物体
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 3) * progress;
+              
+              // 传播旋转到子骨骼
+              propagateMotion(objectInfo.id, {
+                rotation: new THREE.Euler(0, (step.angle || Math.PI / 3) * progress * 0.1, 0)
+              });
+              break;
+            
+            case 'constrainedRotate':
+              // 约束旋转 - 限制在X轴旋转
+              const constrainedAngle = Math.min(step.angle || Math.PI / 4, Math.PI / 2); // 最大90度
+              mesh.rotation.x = startRotation.x + constrainedAngle * progress;
+              break;
+            
+            case 'stretchJoint':
+              // 关节伸展 - 在Y轴方向拉伸
+              const stretchAmount = step.amount || 1.5;
+              mesh.scale.y = startScale.y + (stretchAmount - startScale.y) * progress;
+              break;
+            
+            case 'resetJoint':
+              // 关节重置 - 回到初始状态
+              const initialState = sceneAnimationInitialStates.current.get(objectInfo.id);
+              if (initialState) {
+                mesh.position.lerpVectors(startPosition, initialState.position, progress);
+                mesh.rotation.x = startRotation.x + (initialState.rotation.x - startRotation.x) * progress;
+                mesh.rotation.y = startRotation.y + (initialState.rotation.y - startRotation.y) * progress;
+                mesh.rotation.z = startRotation.z + (initialState.rotation.z - startRotation.z) * progress;
+                mesh.scale.lerpVectors(startScale, initialState.scale, progress);
+              }
               break;
           }
           
@@ -723,9 +843,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   // 更新选中物体的属性
   const updateSelectedObjectProperty = useCallback((
-    property: 'name' | 'position' | 'rotation' | 'scale' | 'color', 
+    property: 'name' | 'position' | 'rotation' | 'scale' | 'color' | 'jointType' | 'constraints', 
     axis: 'x' | 'y' | 'z' | null, 
-    value: string | number
+    value: string | number | any
   ) => {
     if (!selectedObjectRef.current) return;
 
@@ -744,6 +864,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       // 更新mesh的材质颜色
       const material = mesh.material as THREE.MeshStandardMaterial;
       material.color.setHex(colorValue);
+    } else if (property === 'jointType') {
+      // 更新关节类型
+      objectInfo.jointType = value as 'hinge' | 'ball' | 'fixed';
+    } else if (property === 'constraints') {
+      // 更新关节约束
+      objectInfo.constraints = value;
     } else if (axis) {
       const numValue = typeof value === 'string' ? parseFloat(value) : value;
       if (isNaN(numValue)) return;
@@ -859,7 +985,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 移除不必要的变换模式同步useEffect
 
   // 添加不同类型的物体
-  const addObject = useCallback((type: 'cube' | 'sphere' | 'cylinder' | 'cone') => {
+  const addObject = useCallback((type: 'cube' | 'sphere' | 'cylinder' | 'cone' | 'bone' | 'joint' | 'limb', autoSelect: boolean = true) => {
     if (!sceneRef.current || !cameraRef.current || !rendererRef.current) return;
 
     let geometry: THREE.BufferGeometry;
@@ -873,9 +999,17 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     y = 0;
     z = 0;
 
-    // 随机颜色
-    const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
-    const color = colors[Math.floor(Math.random() * colors.length)];
+    // 根据类型选择颜色
+    let color: number;
+    if (type === 'bone' || type === 'joint' || type === 'limb') {
+      // 骨骼系统使用更自然的颜色
+      const boneColors = [0xF5DEB3, 0xDEB887, 0xD2B48C, 0xBC9A6A, 0xA0522D, 0x8B4513]; // 骨色调
+      color = boneColors[Math.floor(Math.random() * boneColors.length)];
+    } else {
+      // 普通几何体使用原有的鲜艳颜色
+      const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
+      color = colors[Math.floor(Math.random() * colors.length)];
+    }
 
     switch (type) {
       case 'cube':
@@ -889,6 +1023,18 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         break;
       case 'cone':
         geometry = new THREE.ConeGeometry(0.5, 1, 32);
+        break;
+      case 'bone':
+        // 骨骼：细长的胶囊形状
+        geometry = new THREE.CapsuleGeometry(0.1, 2, 8, 16);
+        break;
+      case 'joint':
+        // 关节：小球体
+        geometry = new THREE.SphereGeometry(0.15, 16, 16);
+        break;
+      case 'limb':
+        // 肢体：较粗的圆柱体
+        geometry = new THREE.CylinderGeometry(0.3, 0.25, 1.5, 16);
         break;
       default:
         geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -910,7 +1056,16 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
       color,
-      mesh
+      mesh,
+      // 为骨骼对象添加默认属性
+      ...(type === 'bone' || type === 'joint' || type === 'limb' ? {
+        childrenIds: [],
+        jointType: type === 'joint' ? 'ball' as const : 'hinge' as const,
+        constraints: {
+          minAngle: { x: -Math.PI/2, y: -Math.PI/2, z: -Math.PI/2 },
+          maxAngle: { x: Math.PI/2, y: Math.PI/2, z: Math.PI/2 }
+        }
+      } : {})
     };
 
     // 添加到场景
@@ -926,8 +1081,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       return newObjectsInfo;
     });
 
-    // 自动选中新创建的物体 - 使用requestAnimationFrame确保mesh已经添加到场景
-    if (translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+    // 只有在 autoSelect 为 true 时才自动选中新创建的物体
+    if (autoSelect && translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
       requestAnimationFrame(() => {
         // 直接内联选择逻辑，避免依赖selectObject
         if (selectedObjectRef.current) {
@@ -985,7 +1140,398 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
 
     console.log(`添加了${type}，当前物体数量:`, objectsInfoRef.current.length, '物体ID:', objectId);
+    
+    // 返回创建的对象ID
+    return objectId;
   }, [transformMode, createUUID]);
+
+  // 连接两个骨骼对象
+  const connectBones = useCallback((parentId: string, childId: string, autoAlign: boolean = true) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+    
+    if (!parentInfo || !childInfo || !parentInfo.mesh || !childInfo.mesh) {
+      console.error('无法找到要连接的对象');
+      return;
+    }
+
+    // 防止循环连接
+    if (childInfo.childrenIds?.includes(parentId)) {
+      console.warn('不能连接：这会造成循环连接！');
+      return;
+    }
+
+    // 如果子对象已经有父对象，先断开原有连接
+    if (childInfo.parentId) {
+      disconnectBones(childInfo.parentId, childId);
+    }
+
+    // 更新父子关系
+    if (!parentInfo.childrenIds) parentInfo.childrenIds = [];
+    if (!parentInfo.childrenIds.includes(childId)) {
+      parentInfo.childrenIds.push(childId);
+    }
+    childInfo.parentId = parentId;
+
+    // 端对端连接：让骨骼正确连接到关节
+    if (autoAlign) {
+      // 简化连接逻辑：只处理骨骼到关节的连接
+      if (parentInfo.type === 'joint' && childInfo.type === 'bone') {
+        // 关节作为父对象，骨骼作为子对象：骨骼从关节出发
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算从关节到骨骼的方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度（默认1.5个单位）
+        const boneLength = 1.5;
+        
+        // 计算骨骼的新位置（从关节出发）
+        const newBonePos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength / 2));
+        
+        // 设置骨骼位置
+        childInfo.mesh.position.copy(newBonePos);
+        
+        // 计算骨骼的旋转（让骨骼的Y轴指向方向向量）
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        childInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 更新ObjectInfo
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        childInfo.rotation = {
+          x: childInfo.mesh.rotation.x,
+          y: childInfo.mesh.rotation.y,
+          z: childInfo.mesh.rotation.z
+        };
+        
+        console.log(`骨骼 ${childInfo.name} 已从关节 ${parentInfo.name} 出发`);
+        
+      } else if (parentInfo.type === 'bone' && childInfo.type === 'joint') {
+        // 骨骼作为父对象，关节作为子对象：关节在骨骼的端点
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算从骨骼到关节的方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度
+        const boneLength = 1.5;
+        
+        // 让骨骼指向关节
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        parentInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 调整关节位置到骨骼的顶端
+        const newJointPos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength));
+        childInfo.mesh.position.copy(newJointPos);
+        
+        // 更新ObjectInfo
+        parentInfo.rotation = {
+          x: parentInfo.mesh.rotation.x,
+          y: parentInfo.mesh.rotation.y,
+          z: parentInfo.mesh.rotation.z
+        };
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        
+        console.log(`关节 ${childInfo.name} 已连接到骨骼 ${parentInfo.name} 的端点`);
+        
+      } else if (parentInfo.type === 'bone' && childInfo.type === 'limb') {
+        // 骨骼到肢体：肢体在骨骼的端点
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度
+        const boneLength = 1.5;
+        
+        // 让骨骼指向肢体
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        parentInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 调整肢体位置到骨骼的顶端
+        const newLimbPos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength));
+        childInfo.mesh.position.copy(newLimbPos);
+        
+        // 更新ObjectInfo
+        parentInfo.rotation = {
+          x: parentInfo.mesh.rotation.x,
+          y: parentInfo.mesh.rotation.y,
+          z: parentInfo.mesh.rotation.z
+        };
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        
+        console.log(`肢体 ${childInfo.name} 已连接到骨骼 ${parentInfo.name} 的端点`);
+        
+      } else {
+        // 其他类型的连接保持简单的位置偏移
+        const offset = new THREE.Vector3(0, -1, 0);
+        childInfo.mesh.position.copy(parentInfo.mesh.position).add(offset);
+        
+        // 更新ObjectInfo中的位置信息
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+      }
+    }
+
+    // 创建可视化连接线
+    updateBoneConnection(parentInfo, childInfo);
+
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+    
+    console.log(`已连接骨骼: ${parentInfo.name} -> ${childInfo.name}`);
+  }, []);
+
+  // 手动连接骨骼（带用户确认）
+  const connectBonesManually = useCallback((parentId: string, childId: string) => {
+    const shouldAutoAlign = confirm('是否要自动对齐子骨骼到父骨骼附近？');
+    connectBones(parentId, childId, shouldAutoAlign);
+  }, [connectBones]);
+
+  // 更新骨骼连接线
+  const updateBoneConnection = useCallback((parentInfo: ObjectInfo, childInfo: ObjectInfo) => {
+    if (!parentInfo.mesh || !childInfo.mesh) return;
+
+    // 移除旧的连接线
+    if (parentInfo.mesh.userData.connections) {
+      const existingConnection = parentInfo.mesh.userData.connections.find(
+        (conn: any) => conn.childId === childInfo.id
+      );
+      if (existingConnection) {
+        sceneRef.current?.remove(existingConnection.connectionMesh);
+        existingConnection.connectionMesh.geometry.dispose();
+        if (existingConnection.connectionMesh.material instanceof THREE.Material) {
+          existingConnection.connectionMesh.material.dispose();
+        }
+      }
+    }
+
+    const parentPos = parentInfo.mesh.position;
+    const childPos = childInfo.mesh.position;
+    
+    const distance = parentPos.distanceTo(childPos);
+    
+    // 根据距离调整连接线的粗细
+    const lineThickness = Math.max(0.01, Math.min(0.05, distance * 0.02));
+    
+    const connectionGeometry = new THREE.CylinderGeometry(lineThickness, lineThickness, distance, 8);
+    
+    // 根据关节类型选择不同的颜色
+    let connectionColor = 0x666666; // 默认灰色
+    if (childInfo.jointType === 'hinge') {
+      connectionColor = 0x4CAF50; // 绿色 - 铰链关节
+    } else if (childInfo.jointType === 'ball') {
+      connectionColor = 0x2196F3; // 蓝色 - 球形关节
+    } else if (childInfo.jointType === 'fixed') {
+      connectionColor = 0xFF9800; // 橙色 - 固定关节
+    }
+    
+    const connectionMaterial = new THREE.MeshStandardMaterial({ 
+      color: connectionColor, 
+      transparent: true, 
+      opacity: 0.8,
+      emissive: connectionColor,
+      emissiveIntensity: 0.1
+    });
+    const connectionMesh = new THREE.Mesh(connectionGeometry, connectionMaterial);
+    
+    // 定位连接线
+    const midPoint = new THREE.Vector3().addVectors(parentPos, childPos).multiplyScalar(0.5);
+    connectionMesh.position.copy(midPoint);
+    
+    // 旋转连接线使其指向子对象
+    const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    connectionMesh.setRotationFromQuaternion(quaternion);
+    
+    // 添加到场景
+    sceneRef.current?.add(connectionMesh);
+    
+    // 将连接线存储在父对象的mesh userData中
+    if (!parentInfo.mesh.userData.connections) {
+      parentInfo.mesh.userData.connections = [];
+    }
+    
+    // 移除旧连接记录
+    parentInfo.mesh.userData.connections = parentInfo.mesh.userData.connections.filter(
+      (conn: any) => conn.childId !== childInfo.id
+    );
+    
+    // 添加新连接记录
+    parentInfo.mesh.userData.connections.push({
+      childId: childInfo.id,
+      connectionMesh: connectionMesh,
+      jointType: childInfo.jointType
+    });
+  }, []);
+
+  // 断开骨骼连接
+  const disconnectBones = useCallback((parentId: string, childId: string) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+    
+    if (!parentInfo || !childInfo) return;
+
+    // 移除父子关系
+    if (parentInfo.childrenIds) {
+      parentInfo.childrenIds = parentInfo.childrenIds.filter(id => id !== childId);
+    }
+    delete childInfo.parentId;
+
+    // 移除可视化连接线
+    if (parentInfo.mesh?.userData.connections) {
+      const connectionIndex = parentInfo.mesh.userData.connections.findIndex(
+        (conn: any) => conn.childId === childId
+      );
+      if (connectionIndex >= 0) {
+        const connection = parentInfo.mesh.userData.connections[connectionIndex];
+        sceneRef.current?.remove(connection.connectionMesh);
+        connection.connectionMesh.geometry.dispose();
+        if (connection.connectionMesh.material instanceof THREE.Material) {
+          connection.connectionMesh.material.dispose();
+        }
+        parentInfo.mesh.userData.connections.splice(connectionIndex, 1);
+      }
+    }
+
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+    
+    console.log(`已断开骨骼连接: ${parentInfo.name} -> ${childInfo.name}`);
+  }, []);
+
+  // 更新所有骨骼连接线（当物体位置改变时调用）
+  const updateAllBoneConnections = useCallback(() => {
+    objectsInfoRef.current.forEach(objectInfo => {
+      if (objectInfo.childrenIds && objectInfo.childrenIds.length > 0) {
+        objectInfo.childrenIds.forEach(childId => {
+          const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+          if (childInfo) {
+            updateBoneConnection(objectInfo, childInfo);
+          }
+        });
+      }
+    });
+  }, [updateBoneConnection]);
+
+  // 组合选中的骨骼对象为一个整体
+  const createBoneGroup = useCallback(() => {
+    const selectedObjects = objectsInfoRef.current.filter(obj => 
+      obj.mesh && (obj.type === 'bone' || obj.type === 'joint' || obj.type === 'limb')
+    );
+
+    if (selectedObjects.length < 2) {
+      alert('请至少创建2个骨骼对象才能组合！');
+      return;
+    }
+
+    // 创建一个虚拟的组对象
+    const groupId = createUUID();
+    const groupName = `骨骼组_${groupId.slice(0, 8)}`;
+
+    // 创建Three.js Group对象
+    const group = new THREE.Group();
+    group.name = groupName;
+    
+    // 计算所有对象的中心点
+    const center = new THREE.Vector3();
+    selectedObjects.forEach(obj => {
+      if (obj.mesh) center.add(obj.mesh.position);
+    });
+    center.divideScalar(selectedObjects.length);
+    
+    group.position.copy(center);
+    sceneRef.current?.add(group);
+
+    // 将所有骨骼对象添加到组中
+    selectedObjects.forEach(obj => {
+      if (obj.mesh) {
+        // 保存原始世界位置
+        const worldPosition = obj.mesh.getWorldPosition(new THREE.Vector3());
+        
+        // 添加到组
+        group.add(obj.mesh);
+        
+        // 恢复世界位置
+        obj.mesh.position.copy(worldPosition);
+        group.worldToLocal(obj.mesh.position);
+      }
+    });
+
+    console.log(`已创建骨骼组：${groupName}，包含${selectedObjects.length}个骨骼对象`);
+    
+    // 更新界面
+    setObjectsInfo([...objectsInfoRef.current]);
+  }, [createUUID]);
+
+  // 传播运动到子骨骼（用于动画中的连锁效果）
+  const propagateMotion = useCallback((parentId: string, motion: {position?: THREE.Vector3, rotation?: THREE.Euler}) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    if (!parentInfo || !parentInfo.childrenIds) return;
+
+    parentInfo.childrenIds.forEach(childId => {
+      const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+      if (childInfo && childInfo.mesh) {
+        // 根据关节类型传播运动
+        if (motion.rotation && childInfo.jointType === 'ball') {
+          // 球形关节：传播所有旋转
+          childInfo.mesh.rotation.x += motion.rotation.x * 0.5; // 50%传播
+          childInfo.mesh.rotation.y += motion.rotation.y * 0.5;
+          childInfo.mesh.rotation.z += motion.rotation.z * 0.5;
+        } else if (motion.rotation && childInfo.jointType === 'hinge') {
+          // 铰链关节：只传播Y轴旋转
+          childInfo.mesh.rotation.y += motion.rotation.y * 0.3; // 30%传播
+        }
+
+        if (motion.position) {
+          // 位置传播（用于伸展动作）
+          const direction = new THREE.Vector3()
+            .subVectors(childInfo.mesh.position, parentInfo.mesh!.position)
+            .normalize();
+          childInfo.mesh.position.add(direction.multiplyScalar(motion.position.length() * 0.2));
+        }
+
+        // 递归传播到孙子对象
+        propagateMotion(childId, {
+          rotation: motion.rotation ? new THREE.Euler(
+            motion.rotation.x * 0.5,
+            motion.rotation.y * 0.5,
+            motion.rotation.z * 0.5
+          ) : undefined,
+          position: motion.position ? motion.position.clone().multiplyScalar(0.5) : undefined
+        });
+
+        // 更新连接线
+        if (parentInfo.childrenIds?.includes(childId)) {
+          updateBoneConnection(parentInfo, childInfo);
+        }
+      }
+    });
+  }, [updateBoneConnection]);
 
   // 清空所有添加的物体
   const clearObjects = useCallback(() => {
@@ -1909,7 +2455,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
-    camera.position.set(3, 3, 3);
+    camera.position.set(3, 3, 0);
     camera.lookAt(0, 0, 0); // 直接让相机看向原点
     cameraRef.current = camera;
 
@@ -2224,6 +2770,22 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             onClick={() => addObject('cone')}
             label="圆锥体"
             description="在原点(0,0,0)添加一个圆锥体到场景中"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
+            onClick={() => addObject('bone')}
+            label="骨骼"
+            description="添加骨骼对象，可用于构建机器人手臂等结构"
+          />
+          <DropdownItem 
+            onClick={() => addObject('joint')}
+            label="关节"
+            description="添加关节对象，用于连接不同的骨骼部件"
+          />
+          <DropdownItem 
+            onClick={() => addObject('limb')}
+            label="肢体"
+            description="添加肢体对象，适合构建机器人的手臂和腿部"
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
@@ -2938,6 +3500,207 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
                             </button>
                           </div>
                         </div>
+
+                        {/* 骨骼连接功能 */}
+                        {(objectInfo.type === 'bone' || objectInfo.type === 'joint' || objectInfo.type === 'limb') && (
+                          <div style={{ marginBottom: '24px' }}>
+                            <h4 style={{ 
+                              margin: '0 0 12px 0', 
+                              fontSize: '14px', 
+                              fontWeight: 'bold', 
+                              color: '#333',
+                              borderBottom: '2px solid #e0e0e0',
+                              paddingBottom: '8px'
+                            }}>
+                              骨骼连接
+                            </h4>
+                            
+                            {/* 连接到其他骨骼 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                连接到父骨骼
+                              </label>
+                              <select
+                                value={objectInfo.parentId || ''}
+                                onChange={(e) => {
+                                  const newParentId = e.target.value;
+                                  if (newParentId && newParentId !== objectInfo.parentId) {
+                                    // 如果原来有父骨骼，先断开
+                                    if (objectInfo.parentId) {
+                                      disconnectBones(objectInfo.parentId, objectInfo.id);
+                                    }
+                                    // 连接到新的父骨骼
+                                    connectBonesManually(newParentId, objectInfo.id);
+                                  } else if (!newParentId && objectInfo.parentId) {
+                                    // 断开连接
+                                    disconnectBones(objectInfo.parentId, objectInfo.id);
+                                  }
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '8px',
+                                  fontSize: '12px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              >
+                                <option value="">无连接</option>
+                                {objectsInfo
+                                  .filter(obj => 
+                                    (obj.type === 'bone' || obj.type === 'joint' || obj.type === 'limb') && 
+                                    obj.id !== objectInfo.id &&
+                                    !objectInfo.childrenIds?.includes(obj.id) // 防止循环连接
+                                  )
+                                  .map(obj => (
+                                    <option key={obj.id} value={obj.id}>
+                                      {obj.name}
+                                    </option>
+                                  ))
+                                }
+                              </select>
+                            </div>
+
+                            {/* 子骨骼列表 */}
+                            {objectInfo.childrenIds && objectInfo.childrenIds.length > 0 && (
+                              <div style={{ marginBottom: '12px' }}>
+                                <label style={{ 
+                                  display: 'block', 
+                                  fontSize: '12px', 
+                                  fontWeight: 'bold', 
+                                  color: '#666',
+                                  marginBottom: '4px'
+                                }}>
+                                  子骨骼 ({objectInfo.childrenIds.length})
+                                </label>
+                                <div style={{ 
+                                  maxHeight: '100px', 
+                                  overflowY: 'auto',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  padding: '4px'
+                                }}>
+                                  {objectInfo.childrenIds.map(childId => {
+                                    const childInfo = objectsInfo.find(obj => obj.id === childId);
+                                    return childInfo ? (
+                                      <div key={childId} style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        padding: '4px 8px',
+                                        marginBottom: '2px',
+                                        backgroundColor: '#f5f5f5',
+                                        borderRadius: '2px',
+                                        fontSize: '11px'
+                                      }}>
+                                        <span>{childInfo.name}</span>
+                                        <button
+                                          onClick={() => disconnectBones(objectInfo.id, childId)}
+                                          style={{
+                                            padding: '2px 6px',
+                                            backgroundColor: '#dc3545',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '2px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px'
+                                          }}
+                                          title="断开连接"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ) : null;
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* 关节类型选择 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                关节类型
+                              </label>
+                              <select
+                                value={objectInfo.jointType || 'hinge'}
+                                onChange={(e) => {
+                                  updateSelectedObjectProperty('jointType', null, e.target.value);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '8px',
+                                  fontSize: '12px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              >
+                                <option value="hinge">铰链关节</option>
+                                <option value="ball">球型关节</option>
+                                <option value="fixed">固定关节</option>
+                              </select>
+                            </div>
+
+                            {/* 快速操作按钮 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                快速操作
+                              </label>
+                              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => updateAllBoneConnections()}
+                                  style={{
+                                    padding: '4px 8px',
+                                    backgroundColor: '#17a2b8',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    fontSize: '10px',
+                                    fontWeight: 'bold'
+                                  }}
+                                  title="重新计算所有连接线位置"
+                                >
+                                  🔄 更新连接
+                                </button>
+                                <button
+                                  onClick={() => createBoneGroup()}
+                                  style={{
+                                    padding: '4px 8px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    fontSize: '10px',
+                                    fontWeight: 'bold'
+                                  }}
+                                  title="将当前骨骼对象组合为一个整体"
+                                >
+                                  📦 创建组
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })() : (

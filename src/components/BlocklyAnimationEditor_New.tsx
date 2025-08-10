@@ -8,10 +8,14 @@ import * as THREE from 'three';
 interface AnimationStep {
   id: string;
   type: 'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'moveForward' | 'moveBackward' | 
-        'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause';
+        'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause' |
+        'bendJoint' | 'stretchJoint' | 'rotateJoint' | 'resetJoint' |
+        'chainRotate' | 'constrainedRotate' | 'hingeBend' | 'ballRotate';
   duration: number;
   distance?: number;
   scale?: number;
+  angle?: number; // 新增：关节角度
+  amount?: number; // 新增：伸展幅度
 }
 
 interface BlocklyAnimationEditorProps {
@@ -164,6 +168,98 @@ const defineAnimationBlocks = () => {
       this.setHelpUrl('');
     }
   };
+
+  // 骨骼关节动画块
+  Blockly.Blocks['joint_bend'] = {
+    init: function() {
+      this.appendDummyInput()
+        .appendField('关节弯曲')
+        .appendField(new Blockly.FieldDropdown([
+          ['铰链关节', 'hingeBend'],
+          ['球形关节', 'ballRotate']
+        ]), 'JOINT_TYPE');
+      this.appendValueInput('ANGLE')
+        .setCheck('Number')
+        .appendField('角度');
+      this.appendValueInput('DURATION')
+        .setCheck('Number')
+        .appendField('时长');
+      this.appendDummyInput()
+        .appendField('秒');
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(45);
+      this.setTooltip('弯曲关节到指定角度');
+      this.setHelpUrl('');
+    }
+  };
+
+  // 关节旋转块
+  Blockly.Blocks['joint_rotate'] = {
+    init: function() {
+      this.appendDummyInput()
+        .appendField('关节旋转')
+        .appendField(new Blockly.FieldDropdown([
+          ['X轴约束', 'constrainedRotate'],
+          ['自由旋转', 'rotateJoint'],
+          ['链式传动', 'chainRotate']
+        ]), 'ROTATE_TYPE');
+      this.appendValueInput('ANGLE')
+        .setCheck('Number')
+        .appendField('角度');
+      this.appendValueInput('DURATION')
+        .setCheck('Number')
+        .appendField('时长');
+      this.appendDummyInput()
+        .appendField('秒');
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(75);
+      this.setTooltip('旋转关节，支持约束和链式传动');
+      this.setHelpUrl('');
+    }
+  };
+
+  // 关节重置块
+  Blockly.Blocks['joint_reset'] = {
+    init: function() {
+      this.appendValueInput('DURATION')
+        .setCheck('Number')
+        .appendField('重置关节');
+      this.appendDummyInput()
+        .appendField('秒');
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(15);
+      this.setTooltip('将关节重置到初始位置');
+      this.setHelpUrl('');
+    }
+  };
+
+  // 肢体伸展块
+  Blockly.Blocks['limb_stretch'] = {
+    init: function() {
+      this.appendDummyInput()
+        .appendField('肢体')
+        .appendField(new Blockly.FieldDropdown([
+          ['伸展', 'stretchJoint'],
+          ['收缩', 'bendJoint']
+        ]), 'ACTION');
+      this.appendValueInput('AMOUNT')
+        .setCheck('Number')
+        .appendField('幅度');
+      this.appendValueInput('DURATION')
+        .setCheck('Number')
+        .appendField('时长');
+      this.appendDummyInput()
+        .appendField('秒');
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(105);
+      this.setTooltip('伸展或收缩肢体部件');
+      this.setHelpUrl('');
+    }
+  };
 };
 
 const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
@@ -285,6 +381,81 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
           (pauseDurationBlock as any).initSvg();
           (pauseDurationBlock as any).render();
           block.getInput('DURATION')?.connection?.connect(pauseDurationBlock.outputConnection!);
+          break;
+
+        case 'hingeBend':
+        case 'ballRotate':
+          block = workspaceRef.current!.newBlock('joint_bend');
+          block.setFieldValue(step.type, 'JOINT_TYPE');
+          
+          // 设置角度值 (需要将弧度转换为度)
+          const bendAngle = step.angle ? step.angle * 180 / Math.PI : 45;
+          const bendAngleBlock = workspaceRef.current!.newBlock('number_value');
+          bendAngleBlock.setFieldValue(bendAngle.toString(), 'VALUE');
+          (bendAngleBlock as any).initSvg();
+          (bendAngleBlock as any).render();
+          block.getInput('ANGLE')?.connection?.connect(bendAngleBlock.outputConnection!);
+          
+          // 设置时长值
+          const bendDurationBlock = workspaceRef.current!.newBlock('number_value');
+          bendDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (bendDurationBlock as any).initSvg();
+          (bendDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(bendDurationBlock.outputConnection!);
+          break;
+
+        case 'constrainedRotate':
+        case 'rotateJoint':
+        case 'chainRotate':
+          block = workspaceRef.current!.newBlock('joint_rotate');
+          block.setFieldValue(step.type, 'ROTATE_TYPE');
+          
+          // 设置角度值 (需要将弧度转换为度)
+          const rotateAngle = step.angle ? step.angle * 180 / Math.PI : 90;
+          const rotateAngleBlock = workspaceRef.current!.newBlock('number_value');
+          rotateAngleBlock.setFieldValue(rotateAngle.toString(), 'VALUE');
+          (rotateAngleBlock as any).initSvg();
+          (rotateAngleBlock as any).render();
+          block.getInput('ANGLE')?.connection?.connect(rotateAngleBlock.outputConnection!);
+          
+          // 设置时长值
+          const jointRotateDurationBlock = workspaceRef.current!.newBlock('number_value');
+          jointRotateDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (jointRotateDurationBlock as any).initSvg();
+          (jointRotateDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(jointRotateDurationBlock.outputConnection!);
+          break;
+
+        case 'resetJoint':
+          block = workspaceRef.current!.newBlock('joint_reset');
+          
+          // 设置时长值
+          const resetDurationBlock = workspaceRef.current!.newBlock('number_value');
+          resetDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (resetDurationBlock as any).initSvg();
+          (resetDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(resetDurationBlock.outputConnection!);
+          break;
+
+        case 'stretchJoint':
+        case 'bendJoint':
+          block = workspaceRef.current!.newBlock('limb_stretch');
+          block.setFieldValue(step.type, 'ACTION');
+          
+          // 设置幅度值
+          const amountValue = step.amount || 1;
+          const amountBlock = workspaceRef.current!.newBlock('number_value');
+          amountBlock.setFieldValue(amountValue.toString(), 'VALUE');
+          (amountBlock as any).initSvg();
+          (amountBlock as any).render();
+          block.getInput('AMOUNT')?.connection?.connect(amountBlock.outputConnection!);
+          
+          // 设置时长值
+          const stretchDurationBlock = workspaceRef.current!.newBlock('number_value');
+          stretchDurationBlock.setFieldValue(step.duration.toString(), 'VALUE');
+          (stretchDurationBlock as any).initSvg();
+          (stretchDurationBlock as any).render();
+          block.getInput('DURATION')?.connection?.connect(stretchDurationBlock.outputConnection!);
           break;
 
         default:
@@ -447,6 +618,93 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
                   type: 'number_value',
                   fields: {
                     VALUE: 3
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      {
+        kind: 'category',
+        name: '骨骼关节',
+        colour: '45',
+        contents: [
+          {
+            kind: 'block',
+            type: 'joint_bend',
+            inputs: {
+              ANGLE: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 45
+                  }
+                }
+              },
+              DURATION: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 1
+                  }
+                }
+              }
+            }
+          },
+          {
+            kind: 'block',
+            type: 'joint_rotate',
+            inputs: {
+              ANGLE: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 90
+                  }
+                }
+              },
+              DURATION: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 1
+                  }
+                }
+              }
+            }
+          },
+          {
+            kind: 'block',
+            type: 'joint_reset',
+            inputs: {
+              DURATION: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 1
+                  }
+                }
+              }
+            }
+          },
+          {
+            kind: 'block',
+            type: 'limb_stretch',
+            inputs: {
+              AMOUNT: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 1.2
+                  }
+                }
+              },
+              DURATION: {
+                block: {
+                  type: 'number_value',
+                  fields: {
+                    VALUE: 1
                   }
                 }
               }
@@ -738,15 +996,15 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
         case 'rotate_animation':
           const axis = block.getFieldValue('AXIS');
           const angle = getBlockValue(block, 'ANGLE') || 90;
-          const rotateDuration = getBlockValue(block, 'DURATION') || 1;
+          const rotateAnimDuration = getBlockValue(block, 'DURATION') || 1;
           
           steps.push({
             id: `step_${Date.now()}_${Math.random()}`,
             type: axis as any,
-            duration: rotateDuration,
+            duration: rotateAnimDuration,
             distance: angle * Math.PI / 180 // 转换为弧度
           });
-          console.log('  → 添加旋转步骤:', axis, '角度:', angle, '时长:', rotateDuration);
+          console.log('  → 添加旋转步骤:', axis, '角度:', angle, '时长:', rotateAnimDuration);
           break;
 
         case 'scale_animation':
@@ -772,6 +1030,59 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
             duration: pauseDuration
           });
           console.log('  → 添加暂停步骤，时长:', pauseDuration);
+          break;
+
+        case 'joint_bend':
+          const jointType = block.getFieldValue('JOINT_TYPE');
+          const bendAngle = getBlockValue(block, 'ANGLE') || 45;
+          const bendDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          steps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: jointType as any,
+            duration: bendDuration,
+            angle: bendAngle * Math.PI / 180 // 转换为弧度
+          });
+          console.log('  → 添加关节弯曲步骤:', jointType, '角度:', bendAngle, '时长:', bendDuration);
+          break;
+
+        case 'joint_rotate':
+          const rotateType = block.getFieldValue('ROTATE_TYPE');
+          const rotateAngle = getBlockValue(block, 'ANGLE') || 90;
+          const jointRotateDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          steps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: rotateType as any,
+            duration: jointRotateDuration,
+            angle: rotateAngle * Math.PI / 180
+          });
+          console.log('  → 添加关节旋转步骤:', rotateType, '角度:', rotateAngle, '时长:', jointRotateDuration);
+          break;
+
+        case 'joint_reset':
+          const resetDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          steps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: 'resetJoint',
+            duration: resetDuration
+          });
+          console.log('  → 添加关节重置步骤，时长:', resetDuration);
+          break;
+
+        case 'limb_stretch':
+          const action = block.getFieldValue('ACTION');
+          const amount = getBlockValue(block, 'AMOUNT') || 1;
+          const stretchDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          steps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: action as any,
+            duration: stretchDuration,
+            amount: amount
+          });
+          console.log('  → 添加肢体伸展步骤:', action, '幅度:', amount, '时长:', stretchDuration);
           break;
 
         case 'repeat_animation':
@@ -868,6 +1179,55 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
             id: `step_${Date.now()}_${Math.random()}`,
             type: 'pause',
             duration: pauseDuration
+          });
+          break;
+
+        case 'joint_bend':
+          const jointType = block.getFieldValue('JOINT_TYPE');
+          const bendAngle = getBlockValue(block, 'ANGLE') || 45;
+          const bendDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          targetSteps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: jointType as any,
+            duration: bendDuration,
+            angle: bendAngle * Math.PI / 180
+          });
+          break;
+
+        case 'joint_rotate':
+          const rotateType = block.getFieldValue('ROTATE_TYPE');
+          const rotateAngle = getBlockValue(block, 'ANGLE') || 90;
+          const jointRotateDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          targetSteps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: rotateType as any,
+            duration: jointRotateDuration,
+            angle: rotateAngle * Math.PI / 180
+          });
+          break;
+
+        case 'joint_reset':
+          const resetDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          targetSteps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: 'resetJoint',
+            duration: resetDuration
+          });
+          break;
+
+        case 'limb_stretch':
+          const action = block.getFieldValue('ACTION');
+          const amount = getBlockValue(block, 'AMOUNT') || 1;
+          const stretchDuration = getBlockValue(block, 'DURATION') || 1;
+          
+          targetSteps.push({
+            id: `step_${Date.now()}_${Math.random()}`,
+            type: action as any,
+            duration: stretchDuration,
+            amount: amount
           });
           break;
       }
@@ -1005,6 +1365,83 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
       Blockly.Xml.domToWorkspace(xml.documentElement, workspaceRef.current);
     } catch (error) {
       console.error('Error loading example:', error);
+    }
+  }, []);
+
+  // 加载骨骼关节示例动画
+  const loadJointExample = useCallback((e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (!workspaceRef.current) return;
+
+    const jointExampleXml = `
+      <xml>
+        <block type="start_animation" x="20" y="20">
+          <next>
+            <block type="joint_bend">
+              <field name="JOINT_TYPE">hingeBend</field>
+              <value name="ANGLE">
+                <block type="number_value">
+                  <field name="VALUE">45</field>
+                </block>
+              </value>
+              <value name="DURATION">
+                <block type="number_value">
+                  <field name="VALUE">1</field>
+                </block>
+              </value>
+              <next>
+                <block type="joint_rotate">
+                  <field name="ROTATE_TYPE">chainRotate</field>
+                  <value name="ANGLE">
+                    <block type="number_value">
+                      <field name="VALUE">90</field>
+                    </block>
+                  </value>
+                  <value name="DURATION">
+                    <block type="number_value">
+                      <field name="VALUE">2</field>
+                    </block>
+                  </value>
+                  <next>
+                    <block type="limb_stretch">
+                      <field name="ACTION">stretchJoint</field>
+                      <value name="AMOUNT">
+                        <block type="number_value">
+                          <field name="VALUE">1.5</field>
+                        </block>
+                      </value>
+                      <value name="DURATION">
+                        <block type="number_value">
+                          <field name="VALUE">1</field>
+                        </block>
+                      </value>
+                      <next>
+                        <block type="joint_reset">
+                          <value name="DURATION">
+                            <block type="number_value">
+                              <field name="VALUE">1</field>
+                            </block>
+                          </value>
+                        </block>
+                      </next>
+                    </block>
+                  </next>
+                </block>
+              </next>
+            </block>
+          </next>
+        </block>
+      </xml>
+    `;
+
+    try {
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(jointExampleXml, 'text/xml');
+      workspaceRef.current.clear();
+      Blockly.Xml.domToWorkspace(xml.documentElement, workspaceRef.current);
+    } catch (error) {
+      console.error('Error loading joint example:', error);
     }
   }, []);
 
@@ -1187,6 +1624,24 @@ const BlocklyAnimationEditor: React.FC<BlocklyAnimationEditorProps> = ({
           title="加载示例动画"
         >
           示例
+        </button>
+        
+        <button
+          type="button"
+          onClick={loadJointExample}
+          style={{
+            padding: '6px 12px',
+            backgroundColor: '#fd7e14',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 'bold'
+          }}
+          title="加载骨骼关节动画示例"
+        >
+          关节示例
         </button>
         
         <button
