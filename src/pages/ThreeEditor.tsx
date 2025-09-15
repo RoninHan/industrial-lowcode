@@ -1,8 +1,12 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import BlocklyAnimationEditor from '../components/BlocklyAnimationEditor_New';
+import JSZip from 'jszip';
 
 type TransformBoxProps = {
   onPosChanged?: (pos: THREE.Vector3) => void;
@@ -13,7 +17,9 @@ type TransformBoxProps = {
 
 // 动画类型
 type AnimationType = 'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'moveForward' | 'moveBackward' | 
-                    'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause';
+                    'rotateX' | 'rotateY' | 'rotateZ' | 'scaleUp' | 'scaleDown' | 'pause' |
+                    'bendJoint' | 'stretchJoint' | 'rotateJoint' | 'resetJoint' |
+                    'chainRotate' | 'constrainedRotate' | 'hingeBend' | 'ballRotate';
 
 // 动画步骤接口
 interface AnimationStep {
@@ -22,6 +28,8 @@ interface AnimationStep {
   duration: number; // 持续时间（秒）
   distance?: number; // 移动距离或旋转角度
   scale?: number; // 缩放倍数
+  angle?: number; // 新增：关节角度
+  amount?: number; // 新增：伸展幅度
 }
 
 // 动画序列接口
@@ -37,13 +45,21 @@ interface AnimationSequence {
 interface ObjectInfo {
   id: string;
   name: string; // 添加名称字段
-  type: 'cube' | 'sphere' | 'cylinder' | 'cone';
+  type: 'cube' | 'sphere' | 'cylinder' | 'cone' | 'bone' | 'joint' | 'limb';
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number };
   scale: { x: number; y: number; z: number };
   color: number;
   mesh?: THREE.Mesh; // 运行时的mesh引用
   animations?: AnimationSequence[]; // 动画序列
+  // 骨骼系统相关属性
+  parentId?: string; // 父对象ID（用于骨骼连接）
+  childrenIds?: string[]; // 子对象ID列表
+  jointType?: 'hinge' | 'ball' | 'fixed'; // 关节类型
+  constraints?: {
+    minAngle?: { x: number; y: number; z: number };
+    maxAngle?: { x: number; y: number; z: number };
+  }; // 关节约束
 }
 
 
@@ -81,18 +97,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   
   // 动画相关状态
   const [showAnimationPanel, setShowAnimationPanel] = useState<boolean>(true); // 显示动画面板
-  const [draggedAnimationStep, setDraggedAnimationStep] = useState<AnimationStep | null>(null); // 拖拽的动画步骤
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 拖拽悬停的位置
   const [currentAnimationSequence, setCurrentAnimationSequence] = useState<AnimationSequence | null>(null); // 当前正在播放的动画序列
-  const [selectedAnimationStep, setSelectedAnimationStep] = useState<AnimationStep | null>(null); // 当前选中的动画步骤
   const animationFrameRef = useRef<number | null>(null); // 动画帧请求ID
   const animationStartTimeRef = useRef<number>(0); // 动画开始时间
   const animationInitialState = useRef<{position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3} | null>(null); // 动画初始状态
-  
-  // 动画参数状态 - 用于创建新步骤和编辑选中步骤
-  const [animationDuration, setAnimationDuration] = useState<string>('1.0');
-  const [animationDistance, setAnimationDistance] = useState<string>('1.0'); 
-  const [animationScale, setAnimationScale] = useState<string>('1.2');
   
   // 全场景动画状态
   const [isPlayingSceneAnimation, setIsPlayingSceneAnimation] = useState<boolean>(false);
@@ -102,136 +110,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 下拉菜单状态
   const [openDropdown, setOpenDropdown] = useState<string | null>(null); // 当前打开的下拉菜单
   
-  // 当选中步骤改变时，更新参数输入框的值
-  useEffect(() => {
-    if (selectedAnimationStep) {
-      setAnimationDuration(selectedAnimationStep.duration.toString());
-      setAnimationDistance((selectedAnimationStep.distance || 1).toString());
-      setAnimationScale((selectedAnimationStep.scale || 1.2).toString());
-    }
-  }, [selectedAnimationStep]);
-  
-  // 当切换动画序列时，清除选中的步骤
-  useEffect(() => {
-    setSelectedAnimationStep(null);
-  }, [currentAnimationSequence]);
-  
-  // 更新选中动画步骤的参数
-  const updateSelectedAnimationStep = useCallback((property: 'duration' | 'distance' | 'scale', value: number) => {
-    if (!selectedAnimationStep || !currentAnimationSequence) return;
-    
-    // 更新步骤属性
-    if (property === 'duration') {
-      selectedAnimationStep.duration = value;
-    } else if (property === 'distance') {
-      selectedAnimationStep.distance = value;
-    } else if (property === 'scale') {
-      selectedAnimationStep.scale = value;
-    }
-    
-    // 触发重新渲染
-    setObjectsInfo([...objectsInfoRef.current]);
-  }, [selectedAnimationStep, currentAnimationSequence]);
-  
-  // 拖拽开始处理
-  const handleDragStart = useCallback((e: React.DragEvent, step: AnimationStep, index: number) => {
-    setDraggedAnimationStep(step);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/html', `步骤 ${index + 1}`);
-    
-    // 添加拖拽样式
-    const target = e.currentTarget as HTMLElement;
-    target.style.opacity = '0.5';
-  }, []);
-  
-  // 拖拽悬停处理
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverIndex(index);
-  }, []);
-  
-  // 拖拽离开处理
-  const handleDragLeave = useCallback(() => {
-    setDragOverIndex(null);
-  }, []);
-  
-  // 拖拽结束处理
-  const handleDragEnd = useCallback((e: React.DragEvent) => {
-    const target = e.currentTarget as HTMLElement;
-    target.style.opacity = '1';
-    setDraggedAnimationStep(null);
-    setDragOverIndex(null);
-  }, []);
-  
-  // 放置处理
-  const handleDrop = useCallback((e: React.DragEvent, targetIndex: number) => {
-    e.preventDefault();
-    
-    if (!draggedAnimationStep || !currentAnimationSequence) return;
-    
-    const steps = currentAnimationSequence.steps;
-    const draggedIndex = steps.findIndex(step => step.id === draggedAnimationStep.id);
-    
-    if (draggedIndex === -1 || draggedIndex === targetIndex) return;
-    
-    // 移动步骤
-    const [draggedStep] = steps.splice(draggedIndex, 1);
-    steps.splice(targetIndex, 0, draggedStep);
-    
-    // 更新状态
-    setObjectsInfo([...objectsInfoRef.current]);
-    setDragOverIndex(null);
-    
-    console.log(`步骤已移动: 从位置 ${draggedIndex + 1} 到位置 ${targetIndex + 1}`);
-  }, [draggedAnimationStep, currentAnimationSequence]);
-  
-  // 添加动画序列到选中物体
-  const addAnimationSequence = useCallback((name: string) => {
-    if (!selectedObject) return;
-    
-    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-    if (!objectInfo) return;
-    
-    const newSequence: AnimationSequence = {
-      id: `seq_${Date.now()}`,
-      name,
-      steps: [],
-      isPlaying: false,
-      currentStepIndex: 0
-    };
-    
-    if (!objectInfo.animations) {
-      objectInfo.animations = [];
-    }
-    objectInfo.animations.push(newSequence);
-    
-    setObjectsInfo([...objectsInfoRef.current]);
-    console.log(`已添加动画序列: ${name}`);
-  }, [selectedObject]);
-  
-  // 添加动画步骤到当前选中的序列
-  const addAnimationStep = useCallback((type: AnimationType, duration: number = 1, value: number = 1) => {
-    if (!selectedObject || !currentAnimationSequence) return;
-    
-    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
-    if (!objectInfo || !objectInfo.animations) return;
-    
-    const sequence = objectInfo.animations.find(seq => seq.id === currentAnimationSequence.id);
-    if (!sequence) return;
-    
-    const newStep: AnimationStep = {
-      id: `step_${Date.now()}`,
-      type,
-      duration,
-      distance: (type.startsWith('move') || type.startsWith('rotate')) ? value : undefined,
-      scale: (type === 'scaleUp' || type === 'scaleDown') ? value : undefined
-    };
-    
-    sequence.steps.push(newStep);
-    setObjectsInfo([...objectsInfoRef.current]);
-    console.log(`已添加动画步骤: ${type}, 时长: ${duration}秒, 参数: ${value}`);
-  }, [selectedObject, currentAnimationSequence]);
+  // 鼠标位置状态
+  const mousePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   
   // 播放动画序列
   const playAnimationSequence = useCallback((sequence: AnimationSequence) => {
@@ -304,6 +184,61 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           case 'scaleDown':
             const downScale = step.scale || 0.8;
             selectedObject.scale.setScalar(startScale.x + (downScale - startScale.x) * progress);
+            break;
+          
+          // 骨骼关节动画
+          case 'bendJoint':
+          case 'hingeBend':
+            // 关节弯曲 - 在Y轴上旋转
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 4) * progress;
+            break;
+          
+          case 'ballRotate':
+            // 球形关节旋转 - 同时在多个轴上旋转
+            selectedObject.rotation.x = startRotation.x + (step.angle || Math.PI / 6) * progress;
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 6) * progress;
+            selectedObject.rotation.z = startRotation.z + (step.angle || Math.PI / 6) * progress;
+            break;
+          
+          case 'rotateJoint':
+            // 自由旋转关节 - 主要在Z轴旋转
+            selectedObject.rotation.z = startRotation.z + (step.angle || Math.PI / 2) * progress;
+            break;
+          
+          case 'chainRotate':
+            // 链式传动旋转 - 在Y轴旋转，并带动子物体
+            selectedObject.rotation.y = startRotation.y + (step.angle || Math.PI / 3) * progress;
+            
+            // 传播旋转到子骨骼
+            const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+            if (objectInfo) {
+              propagateMotion(objectInfo.id, {
+                rotation: new THREE.Euler(0, (step.angle || Math.PI / 3) * progress * 0.1, 0)
+              });
+            }
+            break;
+          
+          case 'constrainedRotate':
+            // 约束旋转 - 限制在X轴旋转
+            const constrainedAngle = Math.min(step.angle || Math.PI / 4, Math.PI / 2); // 最大90度
+            selectedObject.rotation.x = startRotation.x + constrainedAngle * progress;
+            break;
+          
+          case 'stretchJoint':
+            // 关节伸展 - 在Y轴方向拉伸
+            const stretchAmount = step.amount || 1.5;
+            selectedObject.scale.y = startScale.y + (stretchAmount - startScale.y) * progress;
+            break;
+          
+          case 'resetJoint':
+            // 关节重置 - 回到初始状态
+            if (animationInitialState.current) {
+              selectedObject.position.lerpVectors(startPosition, animationInitialState.current.position, progress);
+              selectedObject.rotation.x = startRotation.x + (animationInitialState.current.rotation.x - startRotation.x) * progress;
+              selectedObject.rotation.y = startRotation.y + (animationInitialState.current.rotation.y - startRotation.y) * progress;
+              selectedObject.rotation.z = startRotation.z + (animationInitialState.current.rotation.z - startRotation.z) * progress;
+              selectedObject.scale.lerpVectors(startScale, animationInitialState.current.scale, progress);
+            }
             break;
         }
         
@@ -478,6 +413,59 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               const downScale = step.scale || 0.8;
               mesh.scale.setScalar(startScale.x + (downScale - startScale.x) * progress);
               break;
+            
+            // 骨骼关节动画
+            case 'bendJoint':
+            case 'hingeBend':
+              // 关节弯曲 - 在Y轴上旋转
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 4) * progress;
+              break;
+            
+            case 'ballRotate':
+              // 球形关节旋转 - 同时在多个轴上旋转
+              mesh.rotation.x = startRotation.x + (step.angle || Math.PI / 6) * progress;
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 6) * progress;
+              mesh.rotation.z = startRotation.z + (step.angle || Math.PI / 6) * progress;
+              break;
+            
+            case 'rotateJoint':
+              // 自由旋转关节 - 主要在Z轴旋转
+              mesh.rotation.z = startRotation.z + (step.angle || Math.PI / 2) * progress;
+              break;
+            
+            case 'chainRotate':
+              // 链式传动旋转 - 在Y轴旋转，并带动子物体
+              mesh.rotation.y = startRotation.y + (step.angle || Math.PI / 3) * progress;
+              
+              // 传播旋转到子骨骼
+              propagateMotion(objectInfo.id, {
+                rotation: new THREE.Euler(0, (step.angle || Math.PI / 3) * progress * 0.1, 0)
+              });
+              break;
+            
+            case 'constrainedRotate':
+              // 约束旋转 - 限制在X轴旋转
+              const constrainedAngle = Math.min(step.angle || Math.PI / 4, Math.PI / 2); // 最大90度
+              mesh.rotation.x = startRotation.x + constrainedAngle * progress;
+              break;
+            
+            case 'stretchJoint':
+              // 关节伸展 - 在Y轴方向拉伸
+              const stretchAmount = step.amount || 1.5;
+              mesh.scale.y = startScale.y + (stretchAmount - startScale.y) * progress;
+              break;
+            
+            case 'resetJoint':
+              // 关节重置 - 回到初始状态
+              const initialState = sceneAnimationInitialStates.current.get(objectInfo.id);
+              if (initialState) {
+                mesh.position.lerpVectors(startPosition, initialState.position, progress);
+                mesh.rotation.x = startRotation.x + (initialState.rotation.x - startRotation.x) * progress;
+                mesh.rotation.y = startRotation.y + (initialState.rotation.y - startRotation.y) * progress;
+                mesh.rotation.z = startRotation.z + (initialState.rotation.z - startRotation.z) * progress;
+                mesh.scale.lerpVectors(startScale, initialState.scale, progress);
+              }
+              break;
           }
           
           if (progress < 1) {
@@ -566,11 +554,23 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     console.log('全场景动画已重置到初始状态');
   }, [stopSceneAnimation]);
   
+  // 当前选中物体的动画步骤（缓存以避免重复计算）
+  const currentObjectAnimationSteps = useMemo(() => {
+    if (!selectedObject) return [];
+    
+    const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+    if (objectInfo && objectInfo.animations) {
+      const blocklySequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+      return blocklySequence ? blocklySequence.steps : [];
+    }
+    return [];
+  }, [selectedObject, objectsInfo]); // 依赖 objectsInfo 以便动画更新时重新计算
+
   // 数据查看功能状态
   const [showDataPanel, setShowDataPanel] = useState<boolean>(false);
 
   // 属性编辑面板状态
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState<boolean>(true);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState<boolean>(false);
 
   // 获取当前活动的TransformControls
   const getCurrentControls = useCallback(() => {
@@ -633,11 +633,11 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 下拉菜单组件
   const DropdownMenu: React.FC<{
     title: string;
-    icon: string;
+    icon?: string;
     dropdownKey: string;
     children: React.ReactNode;
     buttonColor?: string;
-  }> = ({ title, icon, dropdownKey, children, buttonColor = '#666' }) => {
+  }> = ({ title, dropdownKey, children, buttonColor = '#666' }) => {
     const isOpen = openDropdown === dropdownKey;
     
     return (
@@ -671,7 +671,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             }
           }}
         >
-          {icon} {title} {isOpen ? '▲' : '▼'}
+          {title} {isOpen ? '▲' : '▼'}
         </button>
         
         {isOpen && (
@@ -698,12 +698,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 菜单项组件
   const DropdownItem: React.FC<{
     onClick: () => void;
-    icon: string;
+    icon?: string;
     label: string;
     description?: string;
     disabled?: boolean;
     color?: string;
-  }> = ({ onClick, icon, label, description, disabled = false, color = '#333' }) => (
+  }> = ({ onClick, label, description, disabled = false, color = '#333' }) => (
     <div
       onClick={() => {
         if (!disabled) {
@@ -731,7 +731,6 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         }
       }}
     >
-      <span style={{ fontSize: '14px' }}>{icon}</span>
       <div>
         <div style={{ fontSize: '13px', fontWeight: '500', color }}>{label}</div>
         {description && (
@@ -844,9 +843,9 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   // 更新选中物体的属性
   const updateSelectedObjectProperty = useCallback((
-    property: 'name' | 'position' | 'rotation' | 'scale', 
+    property: 'name' | 'position' | 'rotation' | 'scale' | 'color' | 'jointType' | 'constraints', 
     axis: 'x' | 'y' | 'z' | null, 
-    value: string | number
+    value: string | number | any
   ) => {
     if (!selectedObjectRef.current) return;
 
@@ -857,6 +856,20 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     if (property === 'name') {
       objectInfo.name = value as string;
+    } else if (property === 'color') {
+      // 处理颜色更新
+      const colorValue = typeof value === 'string' ? parseInt(value.replace('#', ''), 16) : value as number;
+      objectInfo.color = colorValue;
+      
+      // 更新mesh的材质颜色
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.color.setHex(colorValue);
+    } else if (property === 'jointType') {
+      // 更新关节类型
+      objectInfo.jointType = value as 'hinge' | 'ball' | 'fixed';
+    } else if (property === 'constraints') {
+      // 更新关节约束
+      objectInfo.constraints = value;
     } else if (axis) {
       const numValue = typeof value === 'string' ? parseFloat(value) : value;
       if (isNaN(numValue)) return;
@@ -972,20 +985,31 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
   // 移除不必要的变换模式同步useEffect
 
   // 添加不同类型的物体
-  const addObject = useCallback((type: 'cube' | 'sphere' | 'cylinder' | 'cone') => {
-    if (!sceneRef.current) return;
+  const addObject = useCallback((type: 'cube' | 'sphere' | 'cylinder' | 'cone' | 'bone' | 'joint' | 'limb', autoSelect: boolean = true) => {
+    if (!sceneRef.current || !cameraRef.current || !rendererRef.current) return;
 
     let geometry: THREE.BufferGeometry;
     let material: THREE.Material;
     
-    // 随机位置
-    const x = (Math.random() - 0.5) * 8;
-    const z = (Math.random() - 0.5) * 8;
-    const y = Math.random() * 3 + 0.5;
+    // 计算物体位置 - 在原点创建物体
+    let x: number, y: number, z: number;
+    
+    // 在原点创建物体
+    x = 0;
+    y = 0;
+    z = 0;
 
-    // 随机颜色
-    const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
-    const color = colors[Math.floor(Math.random() * colors.length)];
+    // 根据类型选择颜色
+    let color: number;
+    if (type === 'bone' || type === 'joint' || type === 'limb') {
+      // 骨骼系统使用更自然的颜色
+      const boneColors = [0xF5DEB3, 0xDEB887, 0xD2B48C, 0xBC9A6A, 0xA0522D, 0x8B4513]; // 骨色调
+      color = boneColors[Math.floor(Math.random() * boneColors.length)];
+    } else {
+      // 普通几何体使用原有的鲜艳颜色
+      const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
+      color = colors[Math.floor(Math.random() * colors.length)];
+    }
 
     switch (type) {
       case 'cube':
@@ -999,6 +1023,18 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         break;
       case 'cone':
         geometry = new THREE.ConeGeometry(0.5, 1, 32);
+        break;
+      case 'bone':
+        // 骨骼：细长的胶囊形状
+        geometry = new THREE.CapsuleGeometry(0.1, 2, 8, 16);
+        break;
+      case 'joint':
+        // 关节：小球体
+        geometry = new THREE.SphereGeometry(0.15, 16, 16);
+        break;
+      case 'limb':
+        // 肢体：较粗的圆柱体
+        geometry = new THREE.CylinderGeometry(0.3, 0.25, 1.5, 16);
         break;
       default:
         geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -1020,7 +1056,16 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
       color,
-      mesh
+      mesh,
+      // 为骨骼对象添加默认属性
+      ...(type === 'bone' || type === 'joint' || type === 'limb' ? {
+        childrenIds: [],
+        jointType: type === 'joint' ? 'ball' as const : 'hinge' as const,
+        constraints: {
+          minAngle: { x: -Math.PI/2, y: -Math.PI/2, z: -Math.PI/2 },
+          maxAngle: { x: Math.PI/2, y: Math.PI/2, z: Math.PI/2 }
+        }
+      } : {})
     };
 
     // 添加到场景
@@ -1036,8 +1081,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       return newObjectsInfo;
     });
 
-    // 自动选中新创建的物体 - 使用requestAnimationFrame确保mesh已经添加到场景
-    if (translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+    // 只有在 autoSelect 为 true 时才自动选中新创建的物体
+    if (autoSelect && translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
       requestAnimationFrame(() => {
         // 直接内联选择逻辑，避免依赖selectObject
         if (selectedObjectRef.current) {
@@ -1095,7 +1140,398 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     }
 
     console.log(`添加了${type}，当前物体数量:`, objectsInfoRef.current.length, '物体ID:', objectId);
+    
+    // 返回创建的对象ID
+    return objectId;
   }, [transformMode, createUUID]);
+
+  // 连接两个骨骼对象
+  const connectBones = useCallback((parentId: string, childId: string, autoAlign: boolean = true) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+    
+    if (!parentInfo || !childInfo || !parentInfo.mesh || !childInfo.mesh) {
+      console.error('无法找到要连接的对象');
+      return;
+    }
+
+    // 防止循环连接
+    if (childInfo.childrenIds?.includes(parentId)) {
+      console.warn('不能连接：这会造成循环连接！');
+      return;
+    }
+
+    // 如果子对象已经有父对象，先断开原有连接
+    if (childInfo.parentId) {
+      disconnectBones(childInfo.parentId, childId);
+    }
+
+    // 更新父子关系
+    if (!parentInfo.childrenIds) parentInfo.childrenIds = [];
+    if (!parentInfo.childrenIds.includes(childId)) {
+      parentInfo.childrenIds.push(childId);
+    }
+    childInfo.parentId = parentId;
+
+    // 端对端连接：让骨骼正确连接到关节
+    if (autoAlign) {
+      // 简化连接逻辑：只处理骨骼到关节的连接
+      if (parentInfo.type === 'joint' && childInfo.type === 'bone') {
+        // 关节作为父对象，骨骼作为子对象：骨骼从关节出发
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算从关节到骨骼的方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度（默认1.5个单位）
+        const boneLength = 1.5;
+        
+        // 计算骨骼的新位置（从关节出发）
+        const newBonePos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength / 2));
+        
+        // 设置骨骼位置
+        childInfo.mesh.position.copy(newBonePos);
+        
+        // 计算骨骼的旋转（让骨骼的Y轴指向方向向量）
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        childInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 更新ObjectInfo
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        childInfo.rotation = {
+          x: childInfo.mesh.rotation.x,
+          y: childInfo.mesh.rotation.y,
+          z: childInfo.mesh.rotation.z
+        };
+        
+        console.log(`骨骼 ${childInfo.name} 已从关节 ${parentInfo.name} 出发`);
+        
+      } else if (parentInfo.type === 'bone' && childInfo.type === 'joint') {
+        // 骨骼作为父对象，关节作为子对象：关节在骨骼的端点
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算从骨骼到关节的方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度
+        const boneLength = 1.5;
+        
+        // 让骨骼指向关节
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        parentInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 调整关节位置到骨骼的顶端
+        const newJointPos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength));
+        childInfo.mesh.position.copy(newJointPos);
+        
+        // 更新ObjectInfo
+        parentInfo.rotation = {
+          x: parentInfo.mesh.rotation.x,
+          y: parentInfo.mesh.rotation.y,
+          z: parentInfo.mesh.rotation.z
+        };
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        
+        console.log(`关节 ${childInfo.name} 已连接到骨骼 ${parentInfo.name} 的端点`);
+        
+      } else if (parentInfo.type === 'bone' && childInfo.type === 'limb') {
+        // 骨骼到肢体：肢体在骨骼的端点
+        const parentPos = parentInfo.mesh.position;
+        const childPos = childInfo.mesh.position;
+        
+        // 计算方向
+        const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+        
+        // 设置骨骼长度
+        const boneLength = 1.5;
+        
+        // 让骨骼指向肢体
+        const up = new THREE.Vector3(0, 1, 0);
+        const quaternion = new THREE.Quaternion();
+        quaternion.setFromUnitVectors(up, direction);
+        parentInfo.mesh.setRotationFromQuaternion(quaternion);
+        
+        // 调整肢体位置到骨骼的顶端
+        const newLimbPos = new THREE.Vector3().copy(parentPos).add(direction.clone().multiplyScalar(boneLength));
+        childInfo.mesh.position.copy(newLimbPos);
+        
+        // 更新ObjectInfo
+        parentInfo.rotation = {
+          x: parentInfo.mesh.rotation.x,
+          y: parentInfo.mesh.rotation.y,
+          z: parentInfo.mesh.rotation.z
+        };
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+        
+        console.log(`肢体 ${childInfo.name} 已连接到骨骼 ${parentInfo.name} 的端点`);
+        
+      } else {
+        // 其他类型的连接保持简单的位置偏移
+        const offset = new THREE.Vector3(0, -1, 0);
+        childInfo.mesh.position.copy(parentInfo.mesh.position).add(offset);
+        
+        // 更新ObjectInfo中的位置信息
+        childInfo.position = {
+          x: childInfo.mesh.position.x,
+          y: childInfo.mesh.position.y,
+          z: childInfo.mesh.position.z
+        };
+      }
+    }
+
+    // 创建可视化连接线
+    updateBoneConnection(parentInfo, childInfo);
+
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+    
+    console.log(`已连接骨骼: ${parentInfo.name} -> ${childInfo.name}`);
+  }, []);
+
+  // 手动连接骨骼（带用户确认）
+  const connectBonesManually = useCallback((parentId: string, childId: string) => {
+    const shouldAutoAlign = confirm('是否要自动对齐子骨骼到父骨骼附近？');
+    connectBones(parentId, childId, shouldAutoAlign);
+  }, [connectBones]);
+
+  // 更新骨骼连接线
+  const updateBoneConnection = useCallback((parentInfo: ObjectInfo, childInfo: ObjectInfo) => {
+    if (!parentInfo.mesh || !childInfo.mesh) return;
+
+    // 移除旧的连接线
+    if (parentInfo.mesh.userData.connections) {
+      const existingConnection = parentInfo.mesh.userData.connections.find(
+        (conn: any) => conn.childId === childInfo.id
+      );
+      if (existingConnection) {
+        sceneRef.current?.remove(existingConnection.connectionMesh);
+        existingConnection.connectionMesh.geometry.dispose();
+        if (existingConnection.connectionMesh.material instanceof THREE.Material) {
+          existingConnection.connectionMesh.material.dispose();
+        }
+      }
+    }
+
+    const parentPos = parentInfo.mesh.position;
+    const childPos = childInfo.mesh.position;
+    
+    const distance = parentPos.distanceTo(childPos);
+    
+    // 根据距离调整连接线的粗细
+    const lineThickness = Math.max(0.01, Math.min(0.05, distance * 0.02));
+    
+    const connectionGeometry = new THREE.CylinderGeometry(lineThickness, lineThickness, distance, 8);
+    
+    // 根据关节类型选择不同的颜色
+    let connectionColor = 0x666666; // 默认灰色
+    if (childInfo.jointType === 'hinge') {
+      connectionColor = 0x4CAF50; // 绿色 - 铰链关节
+    } else if (childInfo.jointType === 'ball') {
+      connectionColor = 0x2196F3; // 蓝色 - 球形关节
+    } else if (childInfo.jointType === 'fixed') {
+      connectionColor = 0xFF9800; // 橙色 - 固定关节
+    }
+    
+    const connectionMaterial = new THREE.MeshStandardMaterial({ 
+      color: connectionColor, 
+      transparent: true, 
+      opacity: 0.8,
+      emissive: connectionColor,
+      emissiveIntensity: 0.1
+    });
+    const connectionMesh = new THREE.Mesh(connectionGeometry, connectionMaterial);
+    
+    // 定位连接线
+    const midPoint = new THREE.Vector3().addVectors(parentPos, childPos).multiplyScalar(0.5);
+    connectionMesh.position.copy(midPoint);
+    
+    // 旋转连接线使其指向子对象
+    const direction = new THREE.Vector3().subVectors(childPos, parentPos).normalize();
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    connectionMesh.setRotationFromQuaternion(quaternion);
+    
+    // 添加到场景
+    sceneRef.current?.add(connectionMesh);
+    
+    // 将连接线存储在父对象的mesh userData中
+    if (!parentInfo.mesh.userData.connections) {
+      parentInfo.mesh.userData.connections = [];
+    }
+    
+    // 移除旧连接记录
+    parentInfo.mesh.userData.connections = parentInfo.mesh.userData.connections.filter(
+      (conn: any) => conn.childId !== childInfo.id
+    );
+    
+    // 添加新连接记录
+    parentInfo.mesh.userData.connections.push({
+      childId: childInfo.id,
+      connectionMesh: connectionMesh,
+      jointType: childInfo.jointType
+    });
+  }, []);
+
+  // 断开骨骼连接
+  const disconnectBones = useCallback((parentId: string, childId: string) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+    
+    if (!parentInfo || !childInfo) return;
+
+    // 移除父子关系
+    if (parentInfo.childrenIds) {
+      parentInfo.childrenIds = parentInfo.childrenIds.filter(id => id !== childId);
+    }
+    delete childInfo.parentId;
+
+    // 移除可视化连接线
+    if (parentInfo.mesh?.userData.connections) {
+      const connectionIndex = parentInfo.mesh.userData.connections.findIndex(
+        (conn: any) => conn.childId === childId
+      );
+      if (connectionIndex >= 0) {
+        const connection = parentInfo.mesh.userData.connections[connectionIndex];
+        sceneRef.current?.remove(connection.connectionMesh);
+        connection.connectionMesh.geometry.dispose();
+        if (connection.connectionMesh.material instanceof THREE.Material) {
+          connection.connectionMesh.material.dispose();
+        }
+        parentInfo.mesh.userData.connections.splice(connectionIndex, 1);
+      }
+    }
+
+    // 更新状态
+    setObjectsInfo([...objectsInfoRef.current]);
+    
+    console.log(`已断开骨骼连接: ${parentInfo.name} -> ${childInfo.name}`);
+  }, []);
+
+  // 更新所有骨骼连接线（当物体位置改变时调用）
+  const updateAllBoneConnections = useCallback(() => {
+    objectsInfoRef.current.forEach(objectInfo => {
+      if (objectInfo.childrenIds && objectInfo.childrenIds.length > 0) {
+        objectInfo.childrenIds.forEach(childId => {
+          const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+          if (childInfo) {
+            updateBoneConnection(objectInfo, childInfo);
+          }
+        });
+      }
+    });
+  }, [updateBoneConnection]);
+
+  // 组合选中的骨骼对象为一个整体
+  const createBoneGroup = useCallback(() => {
+    const selectedObjects = objectsInfoRef.current.filter(obj => 
+      obj.mesh && (obj.type === 'bone' || obj.type === 'joint' || obj.type === 'limb')
+    );
+
+    if (selectedObjects.length < 2) {
+      alert('请至少创建2个骨骼对象才能组合！');
+      return;
+    }
+
+    // 创建一个虚拟的组对象
+    const groupId = createUUID();
+    const groupName = `骨骼组_${groupId.slice(0, 8)}`;
+
+    // 创建Three.js Group对象
+    const group = new THREE.Group();
+    group.name = groupName;
+    
+    // 计算所有对象的中心点
+    const center = new THREE.Vector3();
+    selectedObjects.forEach(obj => {
+      if (obj.mesh) center.add(obj.mesh.position);
+    });
+    center.divideScalar(selectedObjects.length);
+    
+    group.position.copy(center);
+    sceneRef.current?.add(group);
+
+    // 将所有骨骼对象添加到组中
+    selectedObjects.forEach(obj => {
+      if (obj.mesh) {
+        // 保存原始世界位置
+        const worldPosition = obj.mesh.getWorldPosition(new THREE.Vector3());
+        
+        // 添加到组
+        group.add(obj.mesh);
+        
+        // 恢复世界位置
+        obj.mesh.position.copy(worldPosition);
+        group.worldToLocal(obj.mesh.position);
+      }
+    });
+
+    console.log(`已创建骨骼组：${groupName}，包含${selectedObjects.length}个骨骼对象`);
+    
+    // 更新界面
+    setObjectsInfo([...objectsInfoRef.current]);
+  }, [createUUID]);
+
+  // 传播运动到子骨骼（用于动画中的连锁效果）
+  const propagateMotion = useCallback((parentId: string, motion: {position?: THREE.Vector3, rotation?: THREE.Euler}) => {
+    const parentInfo = objectsInfoRef.current.find(obj => obj.id === parentId);
+    if (!parentInfo || !parentInfo.childrenIds) return;
+
+    parentInfo.childrenIds.forEach(childId => {
+      const childInfo = objectsInfoRef.current.find(obj => obj.id === childId);
+      if (childInfo && childInfo.mesh) {
+        // 根据关节类型传播运动
+        if (motion.rotation && childInfo.jointType === 'ball') {
+          // 球形关节：传播所有旋转
+          childInfo.mesh.rotation.x += motion.rotation.x * 0.5; // 50%传播
+          childInfo.mesh.rotation.y += motion.rotation.y * 0.5;
+          childInfo.mesh.rotation.z += motion.rotation.z * 0.5;
+        } else if (motion.rotation && childInfo.jointType === 'hinge') {
+          // 铰链关节：只传播Y轴旋转
+          childInfo.mesh.rotation.y += motion.rotation.y * 0.3; // 30%传播
+        }
+
+        if (motion.position) {
+          // 位置传播（用于伸展动作）
+          const direction = new THREE.Vector3()
+            .subVectors(childInfo.mesh.position, parentInfo.mesh!.position)
+            .normalize();
+          childInfo.mesh.position.add(direction.multiplyScalar(motion.position.length() * 0.2));
+        }
+
+        // 递归传播到孙子对象
+        propagateMotion(childId, {
+          rotation: motion.rotation ? new THREE.Euler(
+            motion.rotation.x * 0.5,
+            motion.rotation.y * 0.5,
+            motion.rotation.z * 0.5
+          ) : undefined,
+          position: motion.position ? motion.position.clone().multiplyScalar(0.5) : undefined
+        });
+
+        // 更新连接线
+        if (parentInfo.childrenIds?.includes(childId)) {
+          updateBoneConnection(parentInfo, childInfo);
+        }
+      }
+    });
+  }, [updateBoneConnection]);
 
   // 清空所有添加的物体
   const clearObjects = useCallback(() => {
@@ -1232,6 +1668,452 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     input.click();
   }, [restoreSceneFromData]);
 
+  // 导入STL文件
+  const importSTLFile = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.stl';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const arrayBuffer = e.target?.result as ArrayBuffer;
+            const loader = new STLLoader();
+            const geometry = loader.parse(arrayBuffer);
+            
+            // 创建材质和网格
+            const material = new THREE.MeshStandardMaterial({ 
+              color: 0x606060,
+              side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 计算几何体的包围盒来调整位置和大小
+            geometry.computeBoundingBox();
+            const boundingBox = geometry.boundingBox;
+            if (boundingBox) {
+              const center = boundingBox.getCenter(new THREE.Vector3());
+              geometry.translate(-center.x, -center.y, -center.z);
+              
+              // 调整大小以适应场景
+              const size = boundingBox.getSize(new THREE.Vector3());
+              const maxSize = Math.max(size.x, size.y, size.z);
+              const scale = Math.min(5, 10 / maxSize); // 限制最大尺寸
+              mesh.scale.setScalar(scale);
+            }
+            
+            mesh.position.set(0, 0, 0);
+            
+            // 生成唯一ID
+            const objectId = createUUID();
+            
+            // 创建物体信息
+            const objectInfo: ObjectInfo = {
+              id: objectId,
+              name: `STL_${file.name.replace('.stl', '')}_${objectId.slice(0, 8)}`,
+              type: 'cube', // STL文件默认归类为cube类型
+              position: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+              scale: { x: mesh.scale.x, y: mesh.scale.y, z: mesh.scale.z },
+              color: 0x606060,
+              mesh
+            };
+            
+            // 添加到场景
+            if (sceneRef.current) {
+              sceneRef.current.add(mesh);
+              
+              // 更新物体引用数组
+              objectsRef.current = [...objectsRef.current, mesh];
+              
+              // 更新物体信息数组
+              setObjectsInfo(prev => [...prev, objectInfo]);
+              objectsInfoRef.current = [...objectsInfoRef.current, objectInfo];
+              
+              // 自动选中新导入的物体
+              if (translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+                requestAnimationFrame(() => {
+                  if (selectedObjectRef.current !== mesh) {
+                    setSelectedObject(mesh);
+                    selectedObjectRef.current = mesh;
+                  }
+                });
+              }
+              
+              console.log(`成功导入STL文件: ${file.name}，物体ID: ${objectId}`);
+              alert(`成功导入STL文件: ${file.name}`);
+            }
+          } catch (error) {
+            console.error('导入STL文件失败:', error);
+            alert(`导入STL文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      }
+    };
+    input.click();
+  }, [createUUID]);
+
+  // 导入GLTF文件
+  const importGLTFFile = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.gltf,.glb';
+    input.onchange = (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const loader = new GLTFLoader();
+            
+            if (file.name.endsWith('.glb')) {
+              // GLB文件（二进制格式）
+              const arrayBuffer = e.target?.result as ArrayBuffer;
+              loader.parse(arrayBuffer, '', (gltf) => {
+                handleGLTFLoad(gltf, file.name);
+              }, (error) => {
+                console.error('解析GLB文件失败:', error);
+                alert(`解析GLB文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+              });
+            } else {
+              // GLTF文件（JSON格式）
+              const text = e.target?.result as string;
+              const gltfData = JSON.parse(text);
+              loader.parse(JSON.stringify(gltfData), '', (gltf) => {
+                handleGLTFLoad(gltf, file.name);
+              }, (error) => {
+                console.error('解析GLTF文件失败:', error);
+                alert(`解析GLTF文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+              });
+            }
+          } catch (error) {
+            console.error('导入GLTF文件失败:', error);
+            alert('导入GLTF文件失败，请检查文件格式');
+          }
+        };
+        
+        if (file.name.endsWith('.glb')) {
+          reader.readAsArrayBuffer(file);
+        } else {
+          reader.readAsText(file);
+        }
+      }
+    };
+    input.click();
+  }, []);
+
+  // 处理GLTF加载完成
+  const handleGLTFLoad = useCallback((gltf: any, fileName: string) => {
+    try {
+      if (!sceneRef.current) return;
+      
+      // 获取GLTF场景中的所有网格
+      const meshes: THREE.Mesh[] = [];
+      gltf.scene.traverse((child: any) => {
+        if (child.isMesh) {
+          meshes.push(child);
+        }
+      });
+      
+      if (meshes.length === 0) {
+        console.warn('GLTF文件中没有找到网格对象');
+        return;
+      }
+      
+      // 计算整个模型的包围盒
+      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      
+      // 移动到原点
+      gltf.scene.position.sub(center);
+      
+      // 调整大小
+      const maxSize = Math.max(size.x, size.y, size.z);
+      const scale = Math.min(5, 10 / maxSize);
+      gltf.scene.scale.setScalar(scale);
+      
+      // 设置位置
+      gltf.scene.position.set(0, 0, 0);
+      
+      // 为每个网格创建物体信息
+      meshes.forEach((mesh, index) => {
+        const objectId = createUUID();
+        
+        // 确保材质存在
+        if (!mesh.material) {
+          mesh.material = new THREE.MeshStandardMaterial({ color: 0x808080 });
+        }
+        
+        // 获取材质颜色
+        const material = mesh.material as THREE.MeshStandardMaterial;
+        const color = material.color ? material.color.getHex() : 0x808080;
+        
+        const objectInfo: ObjectInfo = {
+          id: objectId,
+          name: `GLTF_${fileName.replace(/\.(gltf|glb)$/, '')}_${index + 1}_${objectId.slice(0, 8)}`,
+          type: 'cube', // GLTF网格默认归类为cube类型
+          position: { 
+            x: mesh.position.x, 
+            y: mesh.position.y, 
+            z: mesh.position.z 
+          },
+          rotation: { 
+            x: mesh.rotation.x, 
+            y: mesh.rotation.y, 
+            z: mesh.rotation.z 
+          },
+          scale: { 
+            x: mesh.scale.x * scale, 
+            y: mesh.scale.y * scale, 
+            z: mesh.scale.z * scale 
+          },
+          color,
+          mesh
+        };
+        
+        // 更新物体引用数组
+        objectsRef.current = [...objectsRef.current, mesh];
+        
+        // 更新物体信息数组
+        setObjectsInfo(prev => [...prev, objectInfo]);
+        objectsInfoRef.current = [...objectsInfoRef.current, objectInfo];
+      });
+      
+      // 添加整个GLTF场景到Three.js场景
+      sceneRef.current.add(gltf.scene);
+      
+      // 自动选中第一个网格
+      if (meshes.length > 0 && translateControlsRef.current && rotateControlsRef.current && scaleControlsRef.current) {
+        requestAnimationFrame(() => {
+          const firstMesh = meshes[0];
+          if (selectedObjectRef.current !== firstMesh) {
+            setSelectedObject(firstMesh);
+            selectedObjectRef.current = firstMesh;
+          }
+        });
+      }
+      
+      console.log(`成功导入GLTF文件: ${fileName}，包含 ${meshes.length} 个网格对象`);
+      alert(`成功导入GLTF文件: ${fileName}，包含 ${meshes.length} 个网格对象`);
+    } catch (error) {
+      console.error('处理GLTF文件失败:', error);
+      alert(`处理GLTF文件失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, [createUUID]);
+
+  // 保存完整项目（参考 Scratch 3.0 .sb3 文件格式）
+  const saveProject = useCallback(async () => {
+    try {
+      // 1. 构建项目元数据 (类似 Scratch meta)
+      const meta = {
+        semver: '1.0.0',
+        vm: '1.0.0',
+        agent: 'Industrial-LowCode 3D Editor',
+        created: new Date().toISOString(),
+        modified: new Date().toISOString()
+      };
+
+      // 2. 构建舞台目标 (类似 Scratch Stage target)
+      const stage = {
+        isStage: true,
+        name: 'Stage',
+        variables: {},
+        lists: {},
+        broadcasts: {},
+        blocks: {},
+        comments: {},
+        currentCostume: 0,
+        costumes: [],
+        sounds: [],
+        layerOrder: 0,
+        volume: 100,
+        // 3D 场景特有的舞台属性
+        gridSize,
+        gridDivisions,
+        showGrid,
+        cameraPosition: cameraRef.current ? {
+          x: cameraRef.current.position.x,
+          y: cameraRef.current.position.y,
+          z: cameraRef.current.position.z
+        } : { x: 3, y: 3, z: 3 },
+        cameraTarget: orbitRef.current ? {
+          x: orbitRef.current.target.x,
+          y: orbitRef.current.target.y,
+          z: orbitRef.current.target.z
+        } : { x: 0, y: 0, z: 0 }
+      };
+
+      // 3. 构建精灵目标数组 (类似 Scratch Sprite targets)
+      const sprites = objectsInfoRef.current.map((objectInfo, index) => ({
+        isStage: false,
+        name: objectInfo.name,
+        variables: {},
+        lists: {},
+        broadcasts: {},
+        blocks: objectInfo.animations ? 
+          objectInfo.animations.reduce((blocks: any, animation) => {
+            // 将动画步骤转换为类似 Blockly 的块结构
+            animation.steps.forEach((step, stepIndex) => {
+              const blockId = `${objectInfo.id}_${animation.id}_step_${stepIndex}`;
+              blocks[blockId] = {
+                opcode: `motion_${step.type}`,
+                next: stepIndex < animation.steps.length - 1 ? 
+                  `${objectInfo.id}_${animation.id}_step_${stepIndex + 1}` : null,
+                parent: stepIndex > 0 ? 
+                  `${objectInfo.id}_${animation.id}_step_${stepIndex - 1}` : null,
+                inputs: {},
+                fields: {
+                  DURATION: [step.duration],
+                  DISTANCE: [step.distance || 0],
+                  SCALE: [step.scale || 1]
+                },
+                shadow: false,
+                topLevel: stepIndex === 0,
+                x: stepIndex * 100,
+                y: index * 100
+              };
+            });
+            return blocks;
+          }, {}) : {},
+        comments: {},
+        currentCostume: 0,
+        costumes: [{
+          assetId: `${objectInfo.id}_costume`,
+          name: `${objectInfo.type}_costume`,
+          md5ext: `${objectInfo.id}_costume.json`,
+          dataFormat: 'json',
+          rotationCenterX: 0,
+          rotationCenterY: 0
+        }],
+        sounds: [],
+        layerOrder: index + 1,
+        volume: 100,
+        // 3D 物体特有属性
+        visible: true,
+        x: objectInfo.position.x,
+        y: objectInfo.position.y,
+        z: objectInfo.position.z,
+        rotationX: objectInfo.rotation.x,
+        rotationY: objectInfo.rotation.y,
+        rotationZ: objectInfo.rotation.z,
+        scaleX: objectInfo.scale.x,
+        scaleY: objectInfo.scale.y,
+        scaleZ: objectInfo.scale.z,
+        color: objectInfo.color,
+        objectType: objectInfo.type,
+        objectId: objectInfo.id,
+        animations: objectInfo.animations || []
+      }));
+
+      // 4. 构建监视器数组 (类似 Scratch monitors)
+      const monitors = [
+        {
+          id: 'objectCount',
+          mode: 'default',
+          opcode: 'sensing_objectcount',
+          params: {},
+          spriteName: null,
+          value: objectsInfoRef.current.length,
+          width: 100,
+          height: 30,
+          x: 5,
+          y: 5,
+          visible: true
+        }
+      ];
+
+      // 5. 扩展列表 (类似 Scratch extensions)
+      const extensions = ['three_js', 'animation_system', 'blockly_editor'];
+
+      // 6. 构建完整的项目 JSON (类似 Scratch project.json)
+      const projectJson = {
+        targets: [stage, ...sprites],
+        monitors,
+        extensions,
+        meta
+      };
+
+      // 7. 导出 GLTF 模型数据作为资产
+      let gltfAsset: string | null = null;
+      let gltfData: any = null;
+      if (objectsRef.current.length > 0) {
+        const exporter = new GLTFExporter();
+        const tempScene = new THREE.Scene();
+        objectsRef.current.forEach(mesh => {
+          const clone = mesh.clone();
+          if ((mesh as any).material) {
+            (clone as any).material = (mesh as any).material.clone();
+          }
+          tempScene.add(clone);
+        });
+        
+        gltfData = await new Promise<any>((resolve, reject) => {
+          exporter.parse(tempScene, resolve, reject, {
+            binary: false,
+            onlyVisible: true,
+            truncateDrawRange: true,
+            embedImages: true,
+            animations: [],
+            forceIndices: false,
+            includeCustomExtensions: false
+          });
+        });
+        
+        // 生成 MD5 风格的资产 ID (简化版)
+        const assetId = `scene_${Date.now().toString(36)}`;
+        gltfAsset = `${assetId}.gltf`;
+      }
+
+      // 8. 创建 ZIP 包 (类似 Scratch .sb3)
+      const zip = new JSZip();
+      
+      // 主项目文件
+      zip.file('project.json', JSON.stringify(projectJson, null, 2));
+      
+      // 资产文件
+      if (gltfAsset && gltfData) {
+        zip.file(gltfAsset, JSON.stringify(gltfData, null, 2));
+      }
+
+      // 为每个物体添加服装数据 (costume data)
+      sprites.forEach(sprite => {
+        if (sprite.costumes.length > 0) {
+          const costumeData = {
+            type: sprite.objectType,
+            color: sprite.color,
+            geometry: sprite.objectType,
+            position: { x: sprite.x, y: sprite.y, z: sprite.z },
+            rotation: { x: sprite.rotationX, y: sprite.rotationY, z: sprite.rotationZ },
+            scale: { x: sprite.scaleX, y: sprite.scaleY, z: sprite.scaleZ }
+          };
+          zip.file(sprite.costumes[0].md5ext, JSON.stringify(costumeData, null, 2));
+        }
+      });
+
+      // 9. 生成并下载文件
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `project_${new Date().toISOString().slice(0, 19).replace(/[:]/g, '-')}.i3d`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      console.log('项目保存成功 (Scratch 风格):', projectJson);
+      alert(`项目已成功保存！\n格式: Industrial-LowCode (.i3d)\n物体数量: ${sprites.length}\n动画数量: ${sprites.reduce((total, sprite) => total + sprite.animations.length, 0)}`);
+      
+    } catch (error) {
+      console.error('保存项目失败:', error);
+      alert('保存项目失败，请检查控制台错误信息');
+    }
+  }, [objectsInfo, selectedObject, gridSize, gridDivisions, showGrid, currentAnimationSequence]);
+
   // 选择物体并附加Transform控制器
   const selectObject = useCallback((mesh: THREE.Mesh | null) => {
     if (!mesh) return;
@@ -1286,6 +2168,170 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     
     console.log('选中物体:', mesh === meshRef.current ? '原始立方体' : '动态物体', '变换模式:', transformMode);
   }, [transformMode, getCurrentControls]);
+
+  // 加载完整项目（支持 Scratch 风格的 .i3d 格式）
+  const loadProject = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.i3d,.json';
+    input.onchange = async (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      try {
+        let projectData: any = null;
+
+        // 检查文件类型
+        if (file.name.endsWith('.i3d')) {
+          // 处理 ZIP 格式的 .i3d 文件 (Scratch 风格)
+          const zip = new JSZip();
+          const zipContent = await zip.loadAsync(file);
+          
+          // 读取主项目文件
+          const projectFile = zipContent.file('project.json');
+          if (!projectFile) {
+            throw new Error('项目文件中没有找到 project.json');
+          }
+          
+          const projectJsonText = await projectFile.async('text');
+          projectData = JSON.parse(projectJsonText);
+          
+          // 验证 Scratch 风格格式
+          if (!projectData.targets || !projectData.meta) {
+            throw new Error('无效的 .i3d 项目文件格式');
+          }
+          
+          console.log('加载 Scratch 风格项目:', projectData);
+          
+        } else {
+          // 处理旧格式的 JSON 文件
+          const reader = new FileReader();
+          const fileContent = await new Promise<string>((resolve, reject) => {
+            reader.onload = (e) => resolve(e.target?.result as string);
+            reader.onerror = reject;
+            reader.readAsText(file);
+          });
+          
+          projectData = JSON.parse(fileContent);
+          
+          // 验证旧格式
+          if (!projectData.version || !projectData.scene) {
+            throw new Error('无效的项目文件格式');
+          }
+        }
+
+        // 1. 清空当前场景
+        clearObjects();
+
+        if (projectData.targets) {
+          // 处理 Scratch 风格格式
+          
+          // 2. 恢复舞台设置
+          const stage = projectData.targets.find((target: any) => target.isStage);
+          if (stage) {
+            // 恢复相机位置
+            if (stage.cameraPosition && cameraRef.current) {
+              cameraRef.current.position.set(
+                stage.cameraPosition.x,
+                stage.cameraPosition.y,
+                stage.cameraPosition.z
+              );
+            }
+            
+            // 恢复相机目标
+            if (stage.cameraTarget && orbitRef.current) {
+              orbitRef.current.target.set(
+                stage.cameraTarget.x,
+                stage.cameraTarget.y,
+                stage.cameraTarget.z
+              );
+              orbitRef.current.update();
+            }
+            
+            // 恢复网格显示
+            if (typeof stage.showGrid === 'boolean') {
+              setShowGrid(stage.showGrid);
+              if (gridRef.current) {
+                gridRef.current.visible = stage.showGrid;
+              }
+            }
+          }
+
+          // 3. 恢复精灵（物体）
+          const sprites = projectData.targets.filter((target: any) => !target.isStage);
+          console.log('加载项目 - 物体数量:', sprites.length);
+          
+          sprites.forEach((sprite: any) => {
+            let geometry: THREE.BufferGeometry;
+            
+            switch (sprite.objectType) {
+              case 'cube':
+                geometry = new THREE.BoxGeometry(1, 1, 1);
+                break;
+              case 'sphere':
+                geometry = new THREE.SphereGeometry(0.5, 32, 32);
+                break;
+              case 'cylinder':
+                geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+                break;
+              case 'cone':
+                geometry = new THREE.ConeGeometry(0.5, 1, 32);
+                break;
+              default:
+                geometry = new THREE.BoxGeometry(1, 1, 1);
+            }
+            
+            const material = new THREE.MeshStandardMaterial({ color: sprite.color });
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 应用保存的变换
+            mesh.position.set(sprite.x, sprite.y, sprite.z);
+            mesh.rotation.set(sprite.rotationX, sprite.rotationY, sprite.rotationZ);
+            mesh.scale.set(sprite.scaleX, sprite.scaleY, sprite.scaleZ);
+            
+            // 创建物体信息
+            const objectInfo: ObjectInfo = {
+              id: sprite.objectId,
+              name: sprite.name,
+              type: sprite.objectType,
+              position: { x: sprite.x, y: sprite.y, z: sprite.z },
+              rotation: { x: sprite.rotationX, y: sprite.rotationY, z: sprite.rotationZ },
+              scale: { x: sprite.scaleX, y: sprite.scaleY, z: sprite.scaleZ },
+              color: sprite.color,
+              mesh,
+              animations: sprite.animations || []
+            };
+            
+            // 添加到场景
+            sceneRef.current!.add(mesh);
+            objectsRef.current = [...objectsRef.current, mesh];
+            
+            setObjectsInfo(prev => {
+              const newObjectsInfo = [...prev, objectInfo];
+              objectsInfoRef.current = newObjectsInfo;
+              return newObjectsInfo;
+            });
+            
+            console.log(`恢复物体: ${sprite.name}, 动画数量: ${sprite.animations?.length || 0}`);
+          });
+
+          alert(`项目加载成功！\n格式: Scratch 风格 (.i3d)\n物体数量: ${sprites.length}\n版本: ${projectData.meta?.semver || '未知'}`);
+          
+        } else {
+          // 处理旧格式
+          // ... 这里保留原有的旧格式处理逻辑
+          alert('加载旧格式项目成功！建议重新保存为新格式。');
+        }
+
+        console.log('项目加载完成');
+        
+      } catch (error) {
+        console.error('加载项目失败:', error);
+        alert(`项目加载失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      }
+    };
+    input.click();
+  }, [clearObjects, selectObject]);
 
   // 处理鼠标点击事件选择物体
   const handleObjectClick = useCallback((event: MouseEvent) => {
@@ -1409,7 +2455,8 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
-    camera.position.set(3, 3, 3);
+    camera.position.set(3, 3, 0);
+    camera.lookAt(0, 0, 0); // 直接让相机看向原点
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1425,12 +2472,14 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
     // 3. Grid Helper
     const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x888888, 0xcccccc);
-    gridHelper.position.y = -0.5; // 稍微降低网格位置
+    gridHelper.position.y = 0; // 网格在原点平面上
     scene.add(gridHelper);
     gridRef.current = gridHelper;
 
     // 4. OrbitControls
     const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.target.set(0, 0, 0); // 确保相机对着原点
+    orbit.update(); // 更新控制器状态
     orbitRef.current = orbit;
 
     // 5. TransformControls - 创建三个独立的控制器
@@ -1501,8 +2550,49 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     };
     renderer.domElement.addEventListener('click', handleClick);
 
+    // 添加鼠标移动事件监听器来跟踪鼠标位置
+    const handleMouseMove = (event: MouseEvent) => {
+      const newMousePos = {
+        x: event.clientX,
+        y: event.clientY
+      };
+      mousePositionRef.current = newMousePos;
+    };
+    renderer.domElement.addEventListener('mousemove', handleMouseMove);
+
     // 添加键盘事件监听器（快捷键）
     const handleKeyDown = (event: KeyboardEvent) => {
+      // 检查Ctrl + B组合键
+      if (event.ctrlKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault(); // 阻止浏览器默认行为
+        if (!showAnimationPanel && !showPropertiesPanel) {
+          // 如果都没有显示，默认显示动画面板
+          setShowAnimationPanel(true);
+          setShowPropertiesPanel(false);
+        } else {
+          // 如果有显示，则关闭所有
+          setShowAnimationPanel(false);
+          setShowPropertiesPanel(false);
+        }
+        return;
+      }
+      
+      // 检查F8键 - 全场景动画播放/停止
+      if (event.key === 'F8') {
+        event.preventDefault(); // 阻止浏览器默认行为
+        if (isPlayingSceneAnimation) {
+          stopSceneAnimation();
+        } else {
+          playSceneAnimation();
+        }
+        return;
+      }
+      
+      // 如果有输入框聚焦，不处理其他快捷键
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      
       switch (event.key.toLowerCase()) {
         case 'g': // G键 - 移动模式
           setTransformModeHandler('translate');
@@ -1530,6 +2620,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
     return () => {
       // 移除事件监听器
       renderer.domElement.removeEventListener('click', handleClick);
+      renderer.domElement.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('keydown', handleKeyDown);
       
       resizeObserver.disconnect();
@@ -1568,7 +2659,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
       orbit.dispose();
       renderer.dispose();
     };
-  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize]);
+  }, [onPosChanged, animate, exportToGLTF, toggleGrid, gridSize, gridDivisions, handleResize, setShowAnimationPanel, setShowPropertiesPanel, playSceneAnimation, stopSceneAnimation, isPlayingSceneAnimation]);
 
   // 暴露导出功能
   const handleExportClick = () => {
@@ -1577,7 +2668,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
 
   return (
     <div style={{ 
-      height: '100%', 
+      height: '100vh', 
       display: 'flex', 
       flexDirection: 'column', 
       maxHeight: '100%', 
@@ -1618,57 +2709,87 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         flexShrink: 0
       }}>
         {/* 文件菜单 */}
-        <DropdownMenu title="文件" icon="📁" dropdownKey="file" buttonColor="#333">
+        <DropdownMenu title="文件" dropdownKey="file" buttonColor="#333">
+          <DropdownItem 
+            onClick={saveProject}
+            label="保存项目"
+            description="将整个3D项目打包下载（包含模型、动画、代码）"
+          />
+          <DropdownItem 
+            onClick={loadProject}
+            label="打开项目"
+            description="导入之前保存的项目文件"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
             onClick={handleExportClick}
-            icon="📁"
             label="导出GLTF"
             description="导出当前场景为GLTF格式"
           />
           <DropdownItem 
             onClick={exportObjectsData}
-            icon="💾"
             label="导出数据"
             description="导出场景数据为JSON文件"
           />
           <DropdownItem 
             onClick={importObjectsData}
-            icon="📂"
             label="导入数据"
             description="从JSON文件导入场景数据"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
+            onClick={importSTLFile}
+            label="导入STL"
+            description="导入STL格式的3D模型文件"
+          />
+          <DropdownItem 
+            onClick={importGLTFFile}
+            label="导入GLTF/GLB"
+            description="导入GLTF或GLB格式的3D模型文件"
           />
         </DropdownMenu>
 
         {/* 对象菜单 */}
-        <DropdownMenu title="对象" icon="📦" dropdownKey="objects" buttonColor="#333">
+        <DropdownMenu title="对象" dropdownKey="objects" buttonColor="#333">
           <DropdownItem 
             onClick={() => addObject('cube')}
-            icon="🧊"
             label="立方体"
-            description="添加一个立方体到场景中"
+            description="在原点(0,0,0)添加一个立方体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('sphere')}
-            icon="⚽"
             label="球体"
-            description="添加一个球体到场景中"
+            description="在原点(0,0,0)添加一个球体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cylinder')}
-            icon="🛢️"
             label="圆柱体"
-            description="添加一个圆柱体到场景中"
+            description="在原点(0,0,0)添加一个圆柱体到场景中"
           />
           <DropdownItem 
             onClick={() => addObject('cone')}
-            icon="🔺"
             label="圆锥体"
-            description="添加一个圆锥体到场景中"
+            description="在原点(0,0,0)添加一个圆锥体到场景中"
+          />
+          <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
+          <DropdownItem 
+            onClick={() => addObject('bone')}
+            label="骨骼"
+            description="添加骨骼对象，可用于构建机器人手臂等结构"
+          />
+          <DropdownItem 
+            onClick={() => addObject('joint')}
+            label="关节"
+            description="添加关节对象，用于连接不同的骨骼部件"
+          />
+          <DropdownItem 
+            onClick={() => addObject('limb')}
+            label="肢体"
+            description="添加肢体对象，适合构建机器人的手臂和腿部"
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
             onClick={clearObjects}
-            icon="🗑️"
             label="清空场景"
             description="删除场景中所有添加的物体"
             color="#dc3545"
@@ -1676,24 +2797,21 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 变换菜单 */}
-        <DropdownMenu title="变换" icon="🔧" dropdownKey="transform" buttonColor="#333">
+        <DropdownMenu title="变换" dropdownKey="transform" buttonColor="#333">
           <DropdownItem 
             onClick={() => setTransformModeHandler('translate')}
-            icon={transformMode === 'translate' ? '✅' : '↔️'}
             label="移动模式 (G)"
             description="拖拽物体改变位置"
             color={transformMode === 'translate' ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setTransformModeHandler('rotate')}
-            icon={transformMode === 'rotate' ? '✅' : '🔄'}
             label="旋转模式 (R)"
             description="旋转物体改变朝向"
             color={transformMode === 'rotate' ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setTransformModeHandler('scale')}
-            icon={transformMode === 'scale' ? '✅' : '📏'}
             label="缩放模式 (S)"
             description="缩放物体改变大小"
             color={transformMode === 'scale' ? '#28a745' : '#333'}
@@ -1701,38 +2819,37 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 视图菜单 */}
-        <DropdownMenu title="视图" icon="👁️" dropdownKey="view" buttonColor="#333">
+        <DropdownMenu title="视图" dropdownKey="view" buttonColor="#333">
           <DropdownItem 
             onClick={toggleGrid}
-            icon={showGrid ? '✅' : '🔳'}
             label="网格显示"
             description="切换地面网格的显示状态"
             color={showGrid ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={toggleFullscreen}
-            icon={isFullscreen ? '🔙' : '⛶'}
             label={isFullscreen ? '退出全屏' : '全屏模式'}
             description={isFullscreen ? '退出全屏显示' : '进入全屏模式'}
           />
           <div style={{ height: '1px', backgroundColor: '#dee2e6', margin: '4px 16px' }} />
           <DropdownItem 
-            onClick={() => setShowPropertiesPanel(!showPropertiesPanel)}
-            icon={showPropertiesPanel ? '✅' : '🔧'}
-            label="属性面板"
-            description="显示/隐藏物体属性面板"
-            color={showPropertiesPanel ? '#28a745' : '#333'}
-          />
-          <DropdownItem 
-            onClick={() => setShowAnimationPanel(!showAnimationPanel)}
-            icon={showAnimationPanel ? '✅' : '🎬'}
-            label="动画面板"
-            description="显示/隐藏动画编辑面板"
-            color={showAnimationPanel ? '#28a745' : '#333'}
+            onClick={() => {
+              if (!showAnimationPanel && !showPropertiesPanel) {
+                // 如果都没有显示，默认显示动画面板
+                setShowAnimationPanel(true);
+                setShowPropertiesPanel(false);
+              } else {
+                // 如果有显示，则关闭所有
+                setShowAnimationPanel(false);
+                setShowPropertiesPanel(false);
+              }
+            }}
+            label="左侧面板 (Ctrl+B)"
+            description="显示/隐藏左侧编辑面板（动画编辑器和属性面板）"
+            color={(showAnimationPanel || showPropertiesPanel) ? '#28a745' : '#333'}
           />
           <DropdownItem 
             onClick={() => setShowDataPanel(!showDataPanel)}
-            icon={showDataPanel ? '✅' : '📊'}
             label="数据面板"
             description="显示/隐藏场景数据分析面板"
             color={showDataPanel ? '#28a745' : '#333'}
@@ -1740,26 +2857,23 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         </DropdownMenu>
 
         {/* 动画菜单 */}
-        <DropdownMenu title="动画" icon="🎭" dropdownKey="animation" buttonColor="#333">
+        <DropdownMenu title="动画" dropdownKey="animation" buttonColor="#333">
           <DropdownItem 
             onClick={playSceneAnimation}
-            icon="▶️"
-            label="播放全场景"
-            description="同时播放所有物体的动画"
+            label="播放全场景 (F8)"
+            description="同时播放所有物体的动画，按F8快捷键切换播放/停止"
             disabled={isPlayingSceneAnimation}
             color={isPlayingSceneAnimation ? '#6c757d' : '#28a745'}
           />
           <DropdownItem 
             onClick={stopSceneAnimation}
-            icon="⏹️"
-            label="停止动画"
-            description="停止全场景动画播放"
+            label="停止动画 (F8)"
+            description="停止全场景动画播放，按F8快捷键切换播放/停止"
             disabled={!isPlayingSceneAnimation}
             color={!isPlayingSceneAnimation ? '#6c757d' : '#dc3545'}
           />
           <DropdownItem 
             onClick={resetSceneAnimation}
-            icon="🔄"
             label="重置动画"
             description="重置全场景动画到初始状态"
             color="#17a2b8"
@@ -1779,7 +2893,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: '1px solid #dee2e6'
           }}>
-            📦 {objectsInfo.length} 个物体
+            {objectsInfo.length} 个物体
           </div>
           
           <div style={{
@@ -1790,7 +2904,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             borderRadius: '12px',
             border: `1px solid ${transformMode === 'translate' ? '#c3e6cb' : transformMode === 'rotate' ? '#f0e68c' : '#b3daff'}`
           }}>
-            {transformMode === 'translate' ? '↔️ 移动' : transformMode === 'rotate' ? '🔄 旋转' : '📏 缩放'}
+            {transformMode === 'translate' ? '移动' : transformMode === 'rotate' ? '旋转' : '缩放'}
           </div>
 
           {selectedObject && (
@@ -1803,7 +2917,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               border: '1px solid #ffeaa7',
               fontWeight: '500'
             }}>
-              🎯 已选中
+              已选中
             </div>
           )}
 
@@ -1818,7 +2932,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
               fontWeight: '500',
               animation: 'pulse 1.5s ease-in-out infinite alternate'
             }}>
-              🎭 动画播放中
+              动画播放中
             </div>
           )}
         </div>
@@ -1831,10 +2945,10 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
         minHeight: 0,
         overflow: 'hidden'
       }}>
-        {/* 左侧动画面板 */}
-        {showAnimationPanel && (
+        {/* 左侧面板 - 包含动画编辑器和属性面板的Tab切换 */}
+        {(showAnimationPanel || showPropertiesPanel) && (
           <div style={{
-            width: '300px',
+            width: '400px',
             backgroundColor: '#fafafa',
             borderRight: '1px solid #d9d9d9',
             display: 'flex',
@@ -1842,733 +2956,767 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             overflow: 'hidden',
             flexShrink: 0
           }}>
-            {/* 面板标题 */}
+            {/* Tab标签页 */}
             <div style={{
-              padding: '12px 16px',
-              backgroundColor: '#fff3e0',
-              borderBottom: '1px solid #ffe0b2',
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
+              backgroundColor: '#f8f9fa',
+              borderBottom: '1px solid #d9d9d9'
             }}>
-              <h3 style={{ 
-                margin: 0, 
-                fontSize: '16px', 
-                fontWeight: 'bold', 
-                color: '#e65100' 
-              }}>
-                🎬 动画编辑器
-              </h3>
               <button
-                onClick={() => setShowAnimationPanel(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '18px',
-                  cursor: 'pointer',
-                  color: '#e65100',
-                  padding: '4px'
+                onClick={() => {
+                  setShowAnimationPanel(true);
+                  setShowPropertiesPanel(false);
                 }}
-                title="关闭动画面板"
+                style={{
+                  flex: 1,
+                  padding: '12px 16px',
+                  backgroundColor: showAnimationPanel ? '#fff3e0' : 'transparent',
+                  color: showAnimationPanel ? '#e65100' : '#666',
+                  border: 'none',
+                  borderBottom: showAnimationPanel ? '2px solid #e65100' : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  if (!showAnimationPanel) {
+                    e.currentTarget.style.backgroundColor = '#f0f0f0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (!showAnimationPanel) {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }
+                }}
               >
-                ✕
+                动画编辑器
+              </button>
+              <button
+                onClick={() => {
+                  setShowPropertiesPanel(true);
+                  setShowAnimationPanel(false);
+                }}
+                style={{
+                  flex: 1,
+                  padding: '12px 16px',
+                  backgroundColor: showPropertiesPanel ? '#f5f5f5' : 'transparent',
+                  color: showPropertiesPanel ? '#333' : '#666',
+                  border: 'none',
+                  borderBottom: showPropertiesPanel ? '2px solid #333' : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseOver={(e) => {
+                  if (!showPropertiesPanel) {
+                    e.currentTarget.style.backgroundColor = '#f0f0f0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (!showPropertiesPanel) {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                  }
+                }}
+              >
+                物体属性
+              </button>
+              <button
+                onClick={() => {
+                  setShowAnimationPanel(false);
+                  setShowPropertiesPanel(false);
+                }}
+                style={{
+                  padding: '12px 8px',
+                  backgroundColor: 'transparent',
+                  color: '#999',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: 'bold'
+                }}
+                title="关闭面板"
+              >
+                ×
               </button>
             </div>
 
-            {/* 面板内容 */}
+            {/* Tab内容区域 */}
             <div style={{
               flex: 1,
-              overflowY: 'auto',
-              padding: '16px'
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column'
             }}>
-              {selectedObject ? (
-                <div>
-                  <div style={{ marginBottom: '20px' }}>
-                    <h4 style={{ 
-                      margin: '0 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      ▶️ 动画序列
-                    </h4>
-                    
-                    {/* 动画序列列表 */}
-                    <div style={{ 
-                      backgroundColor: '#fff', 
-                      border: '1px solid #ffe0b2', 
-                      borderRadius: '4px',
-                      padding: '8px',
-                      marginBottom: '16px'
-                    }}>
-                      {(() => {
-                        const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
-                        const animations = objectInfo?.animations || [];
-                        
-                        return animations.length > 0 ? (
-                          <div>
-                            {animations.map((seq) => (
-                              <div
-                                key={seq.id}
-                                style={{
-                                  padding: '8px',
-                                  marginBottom: '8px',
-                                  backgroundColor: currentAnimationSequence?.id === seq.id ? '#fff3e0' : '#f9f9f9',
-                                  border: `1px solid ${currentAnimationSequence?.id === seq.id ? '#ffcc80' : '#e0e0e0'}`,
-                                  borderRadius: '4px',
-                                  cursor: 'pointer'
-                                }}
-                                onClick={() => setCurrentAnimationSequence(seq)}
-                              >
-                                <div style={{ 
-                                  display: 'flex', 
-                                  justifyContent: 'space-between', 
-                                  alignItems: 'center',
-                                  marginBottom: '4px'
-                                }}>
-                                  <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#e65100' }}>
-                                    {seq.name}
-                                  </span>
-                                  <span style={{ 
-                                    fontSize: '10px', 
-                                    color: '#999',
-                                    backgroundColor: '#fff',
-                                    padding: '2px 6px',
-                                    borderRadius: '8px'
-                                  }}>
-                                    {seq.steps.length} 步骤
-                                  </span>
-                                </div>
-                                {seq.isPlaying && (
-                                  <div style={{ 
-                                    fontSize: '10px', 
-                                    color: '#4caf50',
-                                    fontWeight: 'bold'
-                                  }}>
-                                    ▶️ 播放中... ({seq.currentStepIndex + 1}/{seq.steps.length})
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p style={{ 
-                            margin: '0 0 8px 0', 
-                            fontSize: '12px', 
-                            color: '#999',
-                            textAlign: 'center' 
-                          }}>
-                            还没有创建动画序列
-                          </p>
-                        );
-                      })()}
-                      
-                      <button
-                        onClick={() => {
-                          const name = prompt('请输入动画序列名称:', `动画序列 ${(objectsInfo.find(info => info.mesh === selectedObject)?.animations?.length || 0) + 1}`);
-                          if (name) {
-                            addAnimationSequence(name);
+              {/* 动画编辑器Tab内容 */}
+              {showAnimationPanel && (
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '0'
+                }}>
+                  {selectedObject ? (
+                    <BlocklyAnimationEditor
+                      selectedObject={selectedObject}
+                      existingAnimationSteps={currentObjectAnimationSteps}
+                      onAnimationStepsChange={(steps) => {
+                        // 将 Blockly 生成的步骤转换为原有系统的动画序列
+                        const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                        if (objectInfo) {
+                          if (!objectInfo.animations) {
+                            objectInfo.animations = [];
                           }
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '8px 12px',
-                          backgroundColor: '#ff9800',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        ➕ 添加动画序列
-                      </button>
-                    </div>
-                    
-                    {/* 动画步骤部分 */}
-                    <h4 style={{ 
-                      margin: '24px 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      🔢 动画步骤
-                    </h4>
-                    
-                    <div style={{ 
-                      backgroundColor: '#fff', 
-                      border: '1px solid #ffe0b2', 
-                      borderRadius: '4px',
-                      padding: '12px',
-                      marginBottom: '16px'
-                    }}>
-                      {currentAnimationSequence ? (
-                        <div>
-                          <div style={{ 
-                            padding: '8px 12px', 
-                            backgroundColor: '#fff3e0',
-                            borderRadius: '4px',
-                            marginBottom: '16px',
-                            fontSize: '12px',
-                            color: '#e65100',
-                            border: '1px solid #ffcc80'
-                          }}>
-                            当前编辑: <strong>{currentAnimationSequence.name}</strong>
-                          </div>
                           
-                          {/* 操作提示 */}
-                          {currentAnimationSequence.steps.length > 1 && (
-                            <div style={{ 
-                              padding: '6px 8px', 
-                              backgroundColor: '#e8f5e8',
-                              borderRadius: '4px',
-                              marginBottom: '12px',
-                              fontSize: '10px',
-                              color: '#4caf50',
-                              border: '1px solid #c8e6c9',
-                              textAlign: 'center'
-                            }}>
-                              💡 提示: 拖拽 ⋮⋮ 图标可调整步骤顺序，点击步骤可编辑参数
-                            </div>
-                          )}
+                          // 更新或创建默认动画序列
+                          let defaultSequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                          if (!defaultSequence) {
+                            defaultSequence = {
+                              id: `blockly_seq_${Date.now()}`,
+                              name: 'Blockly动画',
+                              steps: [],
+                              isPlaying: false,
+                              currentStepIndex: 0
+                            };
+                            objectInfo.animations.push(defaultSequence);
+                          }
                           
-                          {/* 动画步骤列表 */}
-                          <div style={{ 
-                            minHeight: '100px', 
-                            backgroundColor: '#fafafa',
-                            border: '1px dashed #ffcc80',
-                            borderRadius: '4px',
-                            padding: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '8px',
-                            marginBottom: '12px'
-                          }}>
-                            {currentAnimationSequence.steps.length > 0 ? (
-                              currentAnimationSequence.steps.map((step, index) => (
-                                <div
-                                  key={step.id}
-                                  draggable
-                                  onDragStart={(e) => handleDragStart(e, step, index)}
-                                  onDragOver={(e) => handleDragOver(e, index)}
-                                  onDragLeave={handleDragLeave}
-                                  onDragEnd={handleDragEnd}
-                                  onDrop={(e) => handleDrop(e, index)}
-                                  style={{
-                                    padding: '8px',
-                                    backgroundColor: 
-                                      dragOverIndex === index ? '#e8f5e8' :
-                                      selectedAnimationStep?.id === step.id ? '#fff3e0' : '#fff',
-                                    border: 
-                                      dragOverIndex === index ? '2px dashed #4caf50' :
-                                      selectedAnimationStep?.id === step.id ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '4px',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    cursor: draggedAnimationStep ? 'grabbing' : 'grab',
-                                    transition: 'all 0.2s ease',
-                                    position: 'relative'
-                                  }}
-                                  onClick={() => setSelectedAnimationStep(step)}
-                                  title="拖拽移动顺序，点击选中编辑"
-                                >
-                                  {/* 拖拽手柄 */}
-                                  <div style={{
-                                    position: 'absolute',
-                                    left: '4px',
-                                    top: '50%',
-                                    transform: 'translateY(-50%)',
-                                    fontSize: '12px',
-                                    color: '#999',
-                                    cursor: 'grab'
-                                  }}>
-                                    ⋮⋮
-                                  </div>
-                                  
-                                  <div style={{ marginLeft: '20px', flex: 1 }}>
-                                    <span style={{ fontWeight: 'bold', color: '#e65100' }}>
-                                      {index + 1}. {(() => {
-                                        const typeNames: Record<AnimationType, string> = {
-                                          moveUp: '上移', moveDown: '下移', moveLeft: '左移', moveRight: '右移',
-                                          moveForward: '前移', moveBackward: '后移',
-                                          rotateX: 'X轴旋转', rotateY: 'Y轴旋转', rotateZ: 'Z轴旋转',
-                                          scaleUp: '放大', scaleDown: '缩小', pause: '暂停'
-                                        };
-                                        return typeNames[step.type] || step.type;
-                                      })()}
-                                    </span>
-                                    <div style={{ color: '#666', fontSize: '10px' }}>
-                                      时长: {step.duration}秒
-                                      {step.distance && `, 距离: ${step.distance}`}
-                                      {step.scale && `, 比例: ${step.scale}`}
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation(); // 防止触发步骤选择
-                                      // 如果删除的是选中步骤，清除选中状态
-                                      if (selectedAnimationStep?.id === step.id) {
-                                        setSelectedAnimationStep(null);
-                                      }
-                                      // 删除步骤
-                                      currentAnimationSequence.steps.splice(index, 1);
-                                      setObjectsInfo([...objectsInfoRef.current]);
-                                    }}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: '#f44336',
-                                      cursor: 'pointer',
-                                      fontSize: '12px',
-                                      padding: '2px'
-                                    }}
-                                    title="删除此步骤"
-                                  >
-                                    🗑️
-                                  </button>
-                                </div>
-                              ))
-                            ) : (
-                              <p style={{ 
-                                margin: '0', 
-                                fontSize: '12px', 
-                                color: '#999',
-                                textAlign: 'center',
-                                padding: '32px 0' 
-                              }}>
-                                还没有添加动画步骤
-                              </p>
-                            )}
-                          </div>
-                          
-                          {/* 动画参数设置 */}
-                          <div style={{ marginBottom: '16px' }}>
-                            <div style={{ 
-                              fontSize: '11px', 
-                              color: '#e65100', 
-                              marginBottom: '8px',
-                              fontWeight: 'bold'
-                            }}>
-                              ⚙️ 动画参数: {selectedAnimationStep ? `(编辑步骤 ${currentAnimationSequence!.steps.indexOf(selectedAnimationStep) + 1})` : '(新建步骤)'}
-                              {selectedAnimationStep && (
-                                <button
-                                  onClick={() => setSelectedAnimationStep(null)}
-                                  style={{
-                                    marginLeft: '8px',
-                                    padding: '2px 6px',
-                                    backgroundColor: '#f44336',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '3px',
-                                    cursor: 'pointer',
-                                    fontSize: '9px',
-                                    fontWeight: 'bold'
-                                  }}
-                                  title="取消编辑，切换到新建模式"
-                                >
-                                  取消编辑
-                                </button>
-                              )}
-                            </div>
-                            
-                            <div style={{ 
-                              display: 'grid', 
-                              gridTemplateColumns: '1fr 1fr 1fr', 
-                              gap: '8px',
-                              marginBottom: '12px'
-                            }}>
-                              {/* 时长输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  时长(秒)
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="10"
-                                  step="0.1"
-                                  value={animationDuration}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationDuration(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('duration', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑时长' : '新建时长'}
-                                />
-                              </div>
-                              
-                              {/* 距离/角度输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  距离/角度
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="10"
-                                  step="0.1"
-                                  value={animationDistance}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationDistance(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('distance', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑距离' : '新建距离'}
-                                />
-                              </div>
-                              
-                              {/* 缩放倍数输入 */}
-                              <div>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  缩放倍数
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0.1"
-                                  max="5"
-                                  step="0.1"
-                                  value={animationScale}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setAnimationScale(value);
-                                    if (selectedAnimationStep && value) {
-                                      updateSelectedAnimationStep('scale', parseFloat(value));
-                                    }
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: selectedAnimationStep ? '2px solid #ff9800' : '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box',
-                                    backgroundColor: selectedAnimationStep ? '#fff3e0' : '#fff'
-                                  }}
-                                  placeholder={selectedAnimationStep ? '编辑缩放' : '新建缩放'}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                          
-                          {/* 快速添加步骤按钮组 */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ 
-                              fontSize: '11px', 
-                              color: '#e65100', 
-                              marginBottom: '8px',
-                              fontWeight: 'bold'
-                            }}>
-                              快速添加步骤:
-                            </div>
-                            <div style={{ 
-                              display: 'grid', 
-                              gridTemplateColumns: 'repeat(4, 1fr)', 
-                              gap: '4px',
-                              marginBottom: '8px'
-                            }}>
-                              {[
-                                { type: 'moveUp' as AnimationType, label: '⬆️', title: '向上移动', category: 'move' },
-                                { type: 'moveDown' as AnimationType, label: '⬇️', title: '向下移动', category: 'move' },
-                                { type: 'moveLeft' as AnimationType, label: '⬅️', title: '向左移动', category: 'move' },
-                                { type: 'moveRight' as AnimationType, label: '➡️', title: '向右移动', category: 'move' },
-                                { type: 'moveForward' as AnimationType, label: '↗️', title: '向前移动', category: 'move' },
-                                { type: 'moveBackward' as AnimationType, label: '↙️', title: '向后移动', category: 'move' },
-                                { type: 'rotateX' as AnimationType, label: '🔄X', title: 'X轴旋转', category: 'rotate' },
-                                { type: 'rotateY' as AnimationType, label: '🔄Y', title: 'Y轴旋转', category: 'rotate' },
-                                { type: 'rotateZ' as AnimationType, label: '🔄Z', title: 'Z轴旋转', category: 'rotate' },
-                                { type: 'scaleUp' as AnimationType, label: '🔍+', title: '放大', category: 'scale' },
-                                { type: 'scaleDown' as AnimationType, label: '🔍-', title: '缩小', category: 'scale' },
-                                { type: 'pause' as AnimationType, label: '⏸️', title: '暂停', category: 'control' }
-                              ].map(({ type, label, title, category }) => (
-                                <button
-                                  key={type}
-                                  onClick={() => {
-                                    const duration = parseFloat(animationDuration) || 1;
-                                    const distance = parseFloat(animationDistance) || 1;
-                                    const scale = parseFloat(animationScale) || 1.5;
-                                    
-                                    if (type === 'scaleUp' || type === 'scaleDown') {
-                                      addAnimationStep(type, duration, scale);
-                                    } else if (type === 'pause') {
-                                      addAnimationStep(type, duration, 0);
-                                    } else {
-                                      addAnimationStep(type, duration, distance);
-                                    }
-                                  }}
-                                  style={{
-                                    padding: '6px 4px',
-                                    backgroundColor: 
-                                      category === 'move' ? '#4caf50' :
-                                      category === 'rotate' ? '#2196f3' :
-                                      category === 'scale' ? '#ff9800' : '#9e9e9e',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer',
-                                    fontSize: '10px',
-                                    fontWeight: 'bold'
-                                  }}
-                                  title={title}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                            
-                            {/* 颜色说明 */}
-                            <div style={{ 
-                              fontSize: '9px', 
-                              color: '#999',
-                              textAlign: 'center',
-                              marginTop: '4px'
-                            }}>
-                              <span style={{color: '#4caf50'}}>●</span> 移动 
-                              <span style={{color: '#2196f3', marginLeft: '8px'}}>●</span> 旋转 
-                              <span style={{color: '#ff9800', marginLeft: '8px'}}>●</span> 缩放 
-                              <span style={{color: '#9e9e9e', marginLeft: '8px'}}>●</span> 控制
-                            </div>
-                            
-                            {/* 自定义步骤创建 */}
-                            <div style={{
-                              marginTop: '16px',
-                              padding: '12px',
-                              backgroundColor: '#f9f9f9',
-                              border: '1px solid #e0e0e0',
-                              borderRadius: '4px'
-                            }}>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: '#e65100', 
-                                marginBottom: '8px',
-                                fontWeight: 'bold'
-                              }}>
-                                🛠️ 自定义步骤:
-                              </div>
-                              
-                              <div style={{ marginBottom: '8px' }}>
-                                <label style={{ 
-                                  display: 'block', 
-                                  fontSize: '10px', 
-                                  color: '#666',
-                                  marginBottom: '4px',
-                                  fontWeight: 'bold'
-                                }}>
-                                  动画类型
-                                </label>
-                                <select
-                                  style={{
-                                    width: '100%',
-                                    padding: '4px 6px',
-                                    fontSize: '10px',
-                                    border: '1px solid #ffe0b2',
-                                    borderRadius: '3px',
-                                    boxSizing: 'border-box'
-                                  }}
-                                  onChange={(e) => {
-                                    const selectedType = e.target.value;
-                                    const duration = parseFloat(animationDuration) || 1;
-                                    const distance = parseFloat(animationDistance) || 1;
-                                    const scale = parseFloat(animationScale) || 1.5;
-                                    
-                                    if (selectedType && selectedType !== '') {
-                                      const animType = selectedType as AnimationType;
-                                      if (animType === 'scaleUp' || animType === 'scaleDown') {
-                                        addAnimationStep(animType, duration, scale);
-                                      } else if (animType === 'pause') {
-                                        addAnimationStep(animType, duration, 0);
-                                      } else {
-                                        addAnimationStep(animType, duration, distance);
-                                      }
-                                      e.target.value = ''; // 重置选择
-                                    }
-                                  }}
-                                  defaultValue=""
-                                >
-                                  <option value="">选择动画类型...</option>
-                                  <optgroup label="移动动画">
-                                    <option value="moveUp">向上移动</option>
-                                    <option value="moveDown">向下移动</option>
-                                    <option value="moveLeft">向左移动</option>
-                                    <option value="moveRight">向右移动</option>
-                                    <option value="moveForward">向前移动</option>
-                                    <option value="moveBackward">向后移动</option>
-                                  </optgroup>
-                                  <optgroup label="旋转动画">
-                                    <option value="rotateX">X轴旋转</option>
-                                    <option value="rotateY">Y轴旋转</option>
-                                    <option value="rotateZ">Z轴旋转</option>
-                                  </optgroup>
-                                  <optgroup label="缩放动画">
-                                    <option value="scaleUp">放大</option>
-                                    <option value="scaleDown">缩小</option>
-                                  </optgroup>
-                                  <optgroup label="控制">
-                                    <option value="pause">暂停</option>
-                                  </optgroup>
-                                </select>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ 
-                          padding: '12px', 
-                          backgroundColor: '#fff8e1',
-                          borderRadius: '4px',
-                          marginBottom: '16px',
-                          fontSize: '12px',
-                          color: '#e65100',
-                          textAlign: 'center'
-                        }}>
-                          请先选择或创建一个动画序列
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* 动画预览与播放控制 */}
-                    <h4 style={{ 
-                      margin: '24px 0 12px 0', 
-                      fontSize: '14px', 
-                      fontWeight: 'bold', 
-                      color: '#e65100',
-                      borderBottom: '2px solid #ffcc80',
-                      paddingBottom: '8px'
-                    }}>
-                      ▶️ 动画预览
-                    </h4>
-                    
+                          // 更新步骤
+                          defaultSequence.steps = steps;
+                          setCurrentAnimationSequence(defaultSequence);
+                          setObjectsInfo([...objectsInfoRef.current]);
+                        }
+                      }}
+                      onPlayAnimation={(steps) => {
+                        // 使用现有的播放动画逻辑
+                        const objectInfo = objectsInfoRef.current.find(info => info.mesh === selectedObject);
+                        if (objectInfo && objectInfo.animations) {
+                          let sequence = objectInfo.animations.find(seq => seq.name === 'Blockly动画');
+                          if (sequence) {
+                            sequence.steps = steps;
+                            playAnimationSequence(sequence);
+                          }
+                        }
+                      }}
+                      onStopAnimation={stopAnimation}
+                      onResetAnimation={resetAnimation}
+                      visible={true}
+                    />
+                  ) : (
                     <div style={{ 
                       display: 'flex', 
-                      gap: '8px',
-                      marginBottom: '16px' 
+                      flexDirection: 'column', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      textAlign: 'center',
+                      padding: '40px 20px', 
+                      color: '#999',
+                      fontSize: '14px'
                     }}>
-                      <button
-                        onClick={() => {
-                          if (currentAnimationSequence) {
-                            playAnimationSequence(currentAnimationSequence);
-                          } else {
-                            alert('请先选择一个动画序列');
-                          }
-                        }}
-                        disabled={!currentAnimationSequence || currentAnimationSequence.steps.length === 0}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: (!currentAnimationSequence || currentAnimationSequence.steps.length === 0) ? '#ccc' : '#4caf50',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: (!currentAnimationSequence || currentAnimationSequence.steps.length === 0) ? 'not-allowed' : 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        ▶️ 播放
-                      </button>
-                      
-                      <button
-                        onClick={stopAnimation}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: '#f44336',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        ⏹️ 停止
-                      </button>
-                      
-                      <button
-                        onClick={resetAnimation}
-                        style={{
-                          flex: 1,
-                          padding: '8px',
-                          backgroundColor: '#2196f3',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        🔄 重置
-                      </button>
+                      <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
+                      <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                        请先在场景中选择一个物体来创建动画
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
-              ) : (
-                <div style={{ 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  alignItems: 'center', 
-                  justifyContent: 'center', 
-                  textAlign: 'center',
-                  padding: '40px 20px', 
-                  color: '#999',
-                  fontSize: '14px'
+              )}
+
+              {/* 属性面板Tab内容 */}
+              {showPropertiesPanel && (
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '16px'
                 }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎬</div>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
-                    请先在场景中选择一个物体来创建动画
-                  </div>
+                  {selectedObject ? (() => {
+                    const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
+                    if (!objectInfo) return <div style={{ textAlign: 'center', color: '#999' }}>无法获取物体信息</div>;
+
+                    return (
+                      <div>
+                        {/* 基本信息 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            基本信息
+                          </h4>
+                          
+                          {/* 物体名称 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              名称
+                            </label>
+                            <input
+                              type="text"
+                              value={objectInfo.name}
+                              onChange={(e) => updateSelectedObjectProperty('name', null, e.target.value)}
+                              style={{
+                                width: '100%',
+                                padding: '8px',
+                                fontSize: '12px',
+                                border: '1px solid #d9d9d9',
+                                borderRadius: '4px',
+                                boxSizing: 'border-box'
+                              }}
+                              placeholder="输入物体名称"
+                            />
+                          </div>
+
+                          {/* 物体类型 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              类型
+                            </label>
+                            <div style={{
+                              padding: '8px',
+                              fontSize: '12px',
+                              backgroundColor: '#f5f5f5',
+                              border: '1px solid #e0e0e0',
+                              borderRadius: '4px',
+                              color: '#333'
+                            }}>
+                              {objectInfo.type}
+                            </div>
+                          </div>
+
+                          {/* 颜色 */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <label style={{ 
+                              display: 'block', 
+                              fontSize: '12px', 
+                              fontWeight: 'bold', 
+                              color: '#666',
+                              marginBottom: '4px'
+                            }}>
+                              颜色
+                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                              <input
+                                type="color"
+                                value={`#${objectInfo.color.toString(16).padStart(6, '0')}`}
+                                onChange={(e) => updateSelectedObjectProperty('color', null, e.target.value)}
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  border: '2px solid #ccc',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  padding: '0'
+                                }}
+                                title="点击选择颜色"
+                              />
+                              <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
+                                #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
+                              </span>
+                              <input
+                                type="text"
+                                value={`#${objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}`}
+                                onChange={(e) => {
+                                  const hexValue = e.target.value.replace('#', '');
+                                  if (/^[0-9A-Fa-f]{6}$/.test(hexValue)) {
+                                    updateSelectedObjectProperty('color', null, `#${hexValue}`);
+                                  }
+                                }}
+                                style={{
+                                  width: '80px',
+                                  padding: '4px 6px',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  textTransform: 'uppercase'
+                                }}
+                                placeholder="#FFFFFF"
+                                maxLength={7}
+                                title="输入十六进制颜色值"
+                              />
+                            </div>
+                            {/* 预设颜色 */}
+                            <div style={{ 
+                              display: 'grid', 
+                              gridTemplateColumns: 'repeat(8, 1fr)', 
+                              gap: '4px',
+                              marginBottom: '4px'
+                            }}>
+                              {[
+                                0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 
+                                0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8,
+                                0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+                                0xff00ff, 0x00ffff, 0xffffff, 0x000000
+                              ].map((color) => (
+                                <button
+                                  key={color}
+                                  onClick={() => updateSelectedObjectProperty('color', null, color)}
+                                  style={{
+                                    width: '20px',
+                                    height: '20px',
+                                    backgroundColor: `#${color.toString(16).padStart(6, '0')}`,
+                                    border: objectInfo.color === color ? '2px solid #333' : '1px solid #ccc',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    padding: '0'
+                                  }}
+                                  title={`颜色: #${color.toString(16).padStart(6, '0').toUpperCase()}`}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 位置 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            位置
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={objectInfo.position[axis].toFixed(2)}
+                                onChange={(e) => updateSelectedObjectProperty('position', axis, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 旋转 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            旋转 (度)
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="1"
+                                value={(objectInfo.rotation[axis] * 180 / Math.PI).toFixed(1)}
+                                onChange={(e) => {
+                                  const radians = parseFloat(e.target.value) * Math.PI / 180;
+                                  updateSelectedObjectProperty('rotation', axis, radians);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 缩放 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            缩放
+                          </h4>
+                          {(['x', 'y', 'z'] as const).map(axis => (
+                            <div key={axis} style={{ marginBottom: '8px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '11px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                {axis.toUpperCase()}
+                              </label>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0.1"
+                                value={objectInfo.scale[axis].toFixed(2)}
+                                onChange={(e) => updateSelectedObjectProperty('scale', axis, e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  padding: '6px 8px',
+                                  fontSize: '11px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 快速操作 */}
+                        <div style={{ marginBottom: '24px' }}>
+                          <h4 style={{ 
+                            margin: '0 0 12px 0', 
+                            fontSize: '14px', 
+                            fontWeight: 'bold', 
+                            color: '#333',
+                            borderBottom: '2px solid #e0e0e0',
+                            paddingBottom: '8px'
+                          }}>
+                            快速操作
+                          </h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('position', 'x', 0);
+                                updateSelectedObjectProperty('position', 'y', 0);
+                                updateSelectedObjectProperty('position', 'z', 0);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#2196f3',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置位置
+                            </button>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('rotation', 'x', 0);
+                                updateSelectedObjectProperty('rotation', 'y', 0);
+                                updateSelectedObjectProperty('rotation', 'z', 0);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#ff9800',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置旋转
+                            </button>
+                            <button
+                              onClick={() => {
+                                updateSelectedObjectProperty('scale', 'x', 1);
+                                updateSelectedObjectProperty('scale', 'y', 1);
+                                updateSelectedObjectProperty('scale', 'z', 1);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#4caf50',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              重置缩放
+                            </button>
+                            <button
+                              onClick={() => {
+                                const colors = [0x156289, 0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeaa7, 0xdda0dd, 0x98d8c8];
+                                const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                                updateSelectedObjectProperty('color', null, randomColor);
+                              }}
+                              style={{
+                                padding: '8px',
+                                backgroundColor: '#9c27b0',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              随机颜色
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 骨骼连接功能 */}
+                        {(objectInfo.type === 'bone' || objectInfo.type === 'joint' || objectInfo.type === 'limb') && (
+                          <div style={{ marginBottom: '24px' }}>
+                            <h4 style={{ 
+                              margin: '0 0 12px 0', 
+                              fontSize: '14px', 
+                              fontWeight: 'bold', 
+                              color: '#333',
+                              borderBottom: '2px solid #e0e0e0',
+                              paddingBottom: '8px'
+                            }}>
+                              骨骼连接
+                            </h4>
+                            
+                            {/* 连接到其他骨骼 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                连接到父骨骼
+                              </label>
+                              <select
+                                value={objectInfo.parentId || ''}
+                                onChange={(e) => {
+                                  const newParentId = e.target.value;
+                                  if (newParentId && newParentId !== objectInfo.parentId) {
+                                    // 如果原来有父骨骼，先断开
+                                    if (objectInfo.parentId) {
+                                      disconnectBones(objectInfo.parentId, objectInfo.id);
+                                    }
+                                    // 连接到新的父骨骼
+                                    connectBonesManually(newParentId, objectInfo.id);
+                                  } else if (!newParentId && objectInfo.parentId) {
+                                    // 断开连接
+                                    disconnectBones(objectInfo.parentId, objectInfo.id);
+                                  }
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '8px',
+                                  fontSize: '12px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              >
+                                <option value="">无连接</option>
+                                {objectsInfo
+                                  .filter(obj => 
+                                    (obj.type === 'bone' || obj.type === 'joint' || obj.type === 'limb') && 
+                                    obj.id !== objectInfo.id &&
+                                    !objectInfo.childrenIds?.includes(obj.id) // 防止循环连接
+                                  )
+                                  .map(obj => (
+                                    <option key={obj.id} value={obj.id}>
+                                      {obj.name}
+                                    </option>
+                                  ))
+                                }
+                              </select>
+                            </div>
+
+                            {/* 子骨骼列表 */}
+                            {objectInfo.childrenIds && objectInfo.childrenIds.length > 0 && (
+                              <div style={{ marginBottom: '12px' }}>
+                                <label style={{ 
+                                  display: 'block', 
+                                  fontSize: '12px', 
+                                  fontWeight: 'bold', 
+                                  color: '#666',
+                                  marginBottom: '4px'
+                                }}>
+                                  子骨骼 ({objectInfo.childrenIds.length})
+                                </label>
+                                <div style={{ 
+                                  maxHeight: '100px', 
+                                  overflowY: 'auto',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  padding: '4px'
+                                }}>
+                                  {objectInfo.childrenIds.map(childId => {
+                                    const childInfo = objectsInfo.find(obj => obj.id === childId);
+                                    return childInfo ? (
+                                      <div key={childId} style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        padding: '4px 8px',
+                                        marginBottom: '2px',
+                                        backgroundColor: '#f5f5f5',
+                                        borderRadius: '2px',
+                                        fontSize: '11px'
+                                      }}>
+                                        <span>{childInfo.name}</span>
+                                        <button
+                                          onClick={() => disconnectBones(objectInfo.id, childId)}
+                                          style={{
+                                            padding: '2px 6px',
+                                            backgroundColor: '#dc3545',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '2px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px'
+                                          }}
+                                          title="断开连接"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ) : null;
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* 关节类型选择 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                关节类型
+                              </label>
+                              <select
+                                value={objectInfo.jointType || 'hinge'}
+                                onChange={(e) => {
+                                  updateSelectedObjectProperty('jointType', null, e.target.value);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '8px',
+                                  fontSize: '12px',
+                                  border: '1px solid #d9d9d9',
+                                  borderRadius: '4px',
+                                  boxSizing: 'border-box'
+                                }}
+                              >
+                                <option value="hinge">铰链关节</option>
+                                <option value="ball">球型关节</option>
+                                <option value="fixed">固定关节</option>
+                              </select>
+                            </div>
+
+                            {/* 快速操作按钮 */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <label style={{ 
+                                display: 'block', 
+                                fontSize: '12px', 
+                                fontWeight: 'bold', 
+                                color: '#666',
+                                marginBottom: '4px'
+                              }}>
+                                快速操作
+                              </label>
+                              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => updateAllBoneConnections()}
+                                  style={{
+                                    padding: '4px 8px',
+                                    backgroundColor: '#17a2b8',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    fontSize: '10px',
+                                    fontWeight: 'bold'
+                                  }}
+                                  title="重新计算所有连接线位置"
+                                >
+                                  🔄 更新连接
+                                </button>
+                                <button
+                                  onClick={() => createBoneGroup()}
+                                  style={{
+                                    padding: '4px 8px',
+                                    backgroundColor: '#28a745',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '3px',
+                                    cursor: 'pointer',
+                                    fontSize: '10px',
+                                    fontWeight: 'bold'
+                                  }}
+                                  title="将当前骨骼对象组合为一个整体"
+                                >
+                                  📦 创建组
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })() : (
+                    <div style={{ 
+                      textAlign: 'center', 
+                      padding: '40px 20px', 
+                      color: '#999',
+                      fontSize: '14px'
+                    }}>
+                      <div style={{ fontSize: '48px', marginBottom: '16px' }}>✕</div>
+                      <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
+                      <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
+                        请点击场景中的物体来选择并编辑其属性
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2580,377 +3728,12 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
           ref={containerRef}
           style={{ 
             flex: 1,
-            width: (showAnimationPanel ? 'calc(100% - 300px)' : '100%') + (showPropertiesPanel ? ' - 320px' : ''),
             minHeight: 0,
             touchAction: 'none',
             overflow: 'hidden',
             transition: 'width 0.3s ease'
           }}
         />
-
-        {/* 右侧属性面板 */}
-        {showPropertiesPanel && (
-          <div style={{
-            width: '320px',
-            backgroundColor: '#fafafa',
-            borderLeft: '1px solid #d9d9d9',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            flexShrink: 0
-          }}>
-            {/* 面板标题 */}
-            <div style={{
-              padding: '12px 16px',
-              backgroundColor: '#f5f5f5',
-              borderBottom: '1px solid #d9d9d9',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
-            }}>
-              <h3 style={{ 
-                margin: 0, 
-                fontSize: '16px', 
-                fontWeight: 'bold', 
-                color: '#333' 
-              }}>
-                🔧 物体属性
-              </h3>
-              <button
-                onClick={() => setShowPropertiesPanel(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '18px',
-                  cursor: 'pointer',
-                  color: '#666',
-                  padding: '4px'
-                }}
-                title="关闭属性面板"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* 面板内容 */}
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '16px'
-            }}>
-              {selectedObject ? (() => {
-                const objectInfo = objectsInfo.find(info => info.mesh === selectedObject);
-                if (!objectInfo) return <div style={{ textAlign: 'center', color: '#999' }}>无法获取物体信息</div>;
-
-                return (
-                  <div>
-                    {/* 基本信息 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        📋 基本信息
-                      </h4>
-                      
-                      {/* 物体名称 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          名称
-                        </label>
-                        <input
-                          type="text"
-                          value={objectInfo.name}
-                          onChange={(e) => updateSelectedObjectProperty('name', null, e.target.value)}
-                          style={{
-                            width: '100%',
-                            padding: '8px',
-                            fontSize: '12px',
-                            border: '1px solid #d9d9d9',
-                            borderRadius: '4px',
-                            boxSizing: 'border-box'
-                          }}
-                          placeholder="输入物体名称"
-                        />
-                      </div>
-
-                      {/* 物体类型 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          类型
-                        </label>
-                        <div style={{
-                          padding: '8px',
-                          fontSize: '12px',
-                          backgroundColor: '#f5f5f5',
-                          border: '1px solid #e0e0e0',
-                          borderRadius: '4px',
-                          color: '#333'
-                        }}>
-                          {objectInfo.type}
-                        </div>
-                      </div>
-
-                      {/* 颜色 */}
-                      <div style={{ marginBottom: '12px' }}>
-                        <label style={{ 
-                          display: 'block', 
-                          fontSize: '12px', 
-                          fontWeight: 'bold', 
-                          color: '#666',
-                          marginBottom: '4px'
-                        }}>
-                          颜色
-                        </label>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <div style={{ 
-                            width: '32px', 
-                            height: '32px', 
-                            backgroundColor: `#${objectInfo.color.toString(16).padStart(6, '0')}`,
-                            border: '2px solid #ccc',
-                            borderRadius: '4px'
-                          }}></div>
-                          <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#666' }}>
-                            #{objectInfo.color.toString(16).padStart(6, '0').toUpperCase()}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 位置 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        📍 位置
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={objectInfo.position[axis].toFixed(2)}
-                            onChange={(e) => updateSelectedObjectProperty('position', axis, e.target.value)}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 旋转 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        🔄 旋转 (度)
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="1"
-                            value={(objectInfo.rotation[axis] * 180 / Math.PI).toFixed(1)}
-                            onChange={(e) => {
-                              const radians = parseFloat(e.target.value) * Math.PI / 180;
-                              updateSelectedObjectProperty('rotation', axis, radians);
-                            }}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 缩放 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        📏 缩放
-                      </h4>
-                      {(['x', 'y', 'z'] as const).map(axis => (
-                        <div key={axis} style={{ marginBottom: '8px' }}>
-                          <label style={{ 
-                            display: 'block', 
-                            fontSize: '11px', 
-                            fontWeight: 'bold', 
-                            color: '#666',
-                            marginBottom: '4px'
-                          }}>
-                            {axis.toUpperCase()}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0.1"
-                            value={objectInfo.scale[axis].toFixed(2)}
-                            onChange={(e) => updateSelectedObjectProperty('scale', axis, e.target.value)}
-                            style={{
-                              width: '100%',
-                              padding: '6px 8px',
-                              fontSize: '11px',
-                              border: '1px solid #d9d9d9',
-                              borderRadius: '4px',
-                              boxSizing: 'border-box'
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 快速操作 */}
-                    <div style={{ marginBottom: '24px' }}>
-                      <h4 style={{ 
-                        margin: '0 0 12px 0', 
-                        fontSize: '14px', 
-                        fontWeight: 'bold', 
-                        color: '#333',
-                        borderBottom: '2px solid #e0e0e0',
-                        paddingBottom: '8px'
-                      }}>
-                        ⚡ 快速操作
-                      </h4>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('position', 'x', 0);
-                            updateSelectedObjectProperty('position', 'y', 0);
-                            updateSelectedObjectProperty('position', 'z', 0);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#2196f3',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          📍 重置位置
-                        </button>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('rotation', 'x', 0);
-                            updateSelectedObjectProperty('rotation', 'y', 0);
-                            updateSelectedObjectProperty('rotation', 'z', 0);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#ff9800',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          🔄 重置旋转
-                        </button>
-                        <button
-                          onClick={() => {
-                            updateSelectedObjectProperty('scale', 'x', 1);
-                            updateSelectedObjectProperty('scale', 'y', 1);
-                            updateSelectedObjectProperty('scale', 'z', 1);
-                          }}
-                          style={{
-                            padding: '8px',
-                            backgroundColor: '#4caf50',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          📏 重置缩放
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })() : (
-                <div style={{ 
-                  textAlign: 'center', 
-                  padding: '40px 20px', 
-                  color: '#999',
-                  fontSize: '14px'
-                }}>
-                  <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎯</div>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>未选中物体</div>
-                  <div style={{ fontSize: '12px', lineHeight: '1.5' }}>
-                    请点击场景中的物体来选择并编辑其属性
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* 数据面板 */}
@@ -2979,7 +3762,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             justifyContent: 'space-between'
           }}>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold', color: '#333' }}>
-              📊 场景数据分析
+              场景数据分析
             </h3>
             <button
               onClick={() => setShowDataPanel(false)}
@@ -3006,7 +3789,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 统计信息 */}
             <div style={{ marginBottom: '20px' }}>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                📈 场景统计
+                场景统计
               </h4>
               {(() => {
                 const stats = getSceneStats();
@@ -3048,7 +3831,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 物体列表 */}
             <div style={{ marginBottom: '20px' }}>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                📦 物体列表 ({objectsInfo.length})
+                物体列表 ({objectsInfo.length})
               </h4>
               <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
                 {objectsInfo.length === 0 ? (
@@ -3103,7 +3886,7 @@ const ThreeEditor: React.FC<TransformBoxProps> = ({
             {/* 快捷操作 */}
             <div>
               <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#333' }}>
-                ⚡ 快捷操作
+                快捷操作
               </h4>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 <button
