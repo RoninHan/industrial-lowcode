@@ -29,14 +29,14 @@ export const router = createBrowserRouter([
 				path: 'editor',
 				element: <LowCodeEditor />,
 			},
-		{
-			path: 'ammo',
-			element: <AmmoDemo />,
-		},
-		{
-			path: 'three-editor',
-			element: <ThreeEditor />,
-		},
+			{
+				path: 'ammo',
+				element: <AmmoDemo />,
+			},
+			{
+				path: 'three-editor',
+				element: <ThreeEditor />,
+			},
 		],
 	},
 	{
